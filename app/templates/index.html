@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simptions Intelligent Paper Generator — Full</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    /* --- Color variables & themes --- */
+    :root{
+      --primary-color:#00796b;
+      --accent-color:#ffab40;
+      --bg:#f5f7fa;
+      --card:#ffffff;
+      --text:#334155;
+      --muted:#64748b;
+      --border:#e2e8f0;
+      --shadow: rgba(100,116,139,0.12);
+      --easy:#22c55e;
+      --med:#3b82f6;
+      --hard:#ef4444;
+    }
+
+    [data-bs-theme="dark"]{
+      --primary-color:#26a69a;
+      --accent-color:#ffd180;
+      --bg:#0f172a;
+      --card:#1e293b;
+      --text:#cbd5e1;
+      --muted:#94a3b8;
+      --border:#334155;
+      --shadow: rgba(0,0,0,0.2);
+      --easy:#4ade80;
+      --med:#60a5fa;
+      --hard:#f87171;
+    }
+    .final-preview-box {
+  background: var(--bs-body-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+  transition: all 0.25s ease-in-out;
+}
+
+.preview-content .preview-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 0.95rem;
+  border-bottom: 1px dashed rgba(0,0,0,0.08);
+}
+
+.preview-content .preview-item:last-child {
+  border-bottom: none;
+}
+
+.preview-section-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  font-size: 1rem;
+  color: var(--bs-primary);
+}
+
+.preview-divider {
+  margin: 10px 0;
+  border-top: 1px solid rgba(0,0,0,0.08);
+}
+#finalPreviewContent .fs-5 {
+  font-size: 1.35rem !important;
+}
+
+#finalPreviewContent .fs-6 {
+  font-size: 1.05rem !important;
+  opacity: 0.85;
+}
+/* Main Box */
+.final-preview-box {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+  transition: box-shadow 0.3s ease;
+  background: var(--bs-body-bg);
+}
+
+.final-preview-box:hover {
+  box-shadow: 0 6px 22px rgba(0,0,0,0.09);
+}
+
+/* Header Styling */
+.final-preview-header {
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-primary-text);
+  padding: 12px 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  font-size: 1.05rem;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+/* Preview Item Rows */
+.preview-content .preview-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 0.95rem;
+  border-bottom: 1px dashed rgba(0,0,0,0.08);
+}
+
+.preview-content .preview-item:last-child {
+  border-bottom: none;
+}
+
+/* Divider */
+.preview-divider {
+  margin: 10px 0;
+  border-top: 1px solid rgba(0,0,0,0.08);
+}
+
+/* Title Blow-up (Exam & School) */
+.preview-content .preview-title {
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.preview-content .preview-title .exam-name {
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.preview-content .preview-title .school-name {
+  font-size: 1rem;
+  opacity: 0.8;
+}
+
+
+
+    html,body{ height:100%; background:var(--bg); color:var(--text); font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; }
+
+    /* Cards & layout */
+    .main-card, .offcanvas { background:var(--card); border:1px solid var(--border); }
+    .main-card { border-radius:16px; box-shadow:0 6px 16px -8px var(--shadow), 0 6px 12px -12px var(--shadow); }
+    .card-header { background:transparent; border-bottom:1px solid var(--border); padding:1rem 1.25rem; }
+    .card-body { padding:1.5rem; }
+    .offcanvas-header { border-bottom: 1px solid var(--border); }
+
+    /* Form steps */
+    .form-step { display:none; animation:fadeIn .25s ease-out; }
+    .form-step.active { display:block; }
+    @keyframes fadeIn { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: none; } }
+
+    .form-label { font-weight:600; color:var(--muted); font-size:0.95rem; }
+    .form-control, .form-select { border-radius:8px; background:var(--bg); border:1px solid var(--border); padding:10px 12px; font-weight:600; color:var(--text); }
+    .form-control::placeholder { color: var(--muted); font-weight:500; }
+    .form-control.is-invalid { border-color: #dc3545; }
+
+    .btn { border-radius:10px; font-weight:700; }
+    .btn-primary { background:var(--primary-color); border:none; color:#fff; }
+    .btn-outline-secondary { border-color: var(--border); color: var(--muted); }
+
+    .progress { height:10px; border-radius:6px; background:var(--border); }
+    .progress-bar { background:var(--accent-color); transition:width .35s ease-in-out; }
+
+    /* Distribution bar */
+    .distribution-bar { position:relative; width:100%; height:20px; background:var(--border); border-radius:10px; display:flex; overflow:hidden; }
+    .dist-segment { height:100%; }
+    .dist-segment.easy { background:var(--easy); }
+    .dist-segment.medium { background:var(--med); }
+    .dist-segment.hard { background:var(--hard); }
+    .dist-handle { position:absolute; top:50%; transform:translate(-50%,-50%); width:24px; height:24px; border-radius:50%; background:var(--card); border:3px solid var(--primary-color); cursor:ew-resize; z-index:10; }
+    .dist-labels { display:flex; justify-content:space-between; margin-top:8px; }
+
+    .question-type-group { padding:12px; border-radius:8px; border:1px solid var(--border); }
+    #chaptersContainer { max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--bg); }
+
+    /* Template cards (offcanvas) */
+    .template-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:1rem; }
+    .template-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; flex-direction:column; justify-content:space-between; min-height:120px; }
+
+    #toolbar { position: absolute; top: 0; left: 0; display: flex; flex-direction: column; gap: 10px; padding: 1rem; }
+
+    /* Dark Mode Overrides */
+    [data-bs-theme="dark"] .form-control,
+    [data-bs-theme="dark"] .form-select,
+    [data-bs-theme="dark"] #chaptersContainer,
+    [data-bs-theme="dark"] .offcanvas,
+    [data-bs-theme="dark"] .template-card {
+      background-color: var(--bg) !important;
+      border-color: var(--border) !important;
+      color: var(--text) !important;
+    }
+    [data-bs-theme="dark"] .offcanvas { background-image: none; }
+    [data-bs-theme="dark"] .btn-outline-secondary { color: var(--text) !important; border-color: var(--border) !important; }
+    [data-bs-theme="dark"] .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+  </style>
+</head>
+<body>
+  
+  <div class="position-fixed top-0 end-0 p-3" style="z-index:1050;">
+      <div class="d-flex align-items-center gap-2">
+        <div class="btn-group" role="group">
+            <button type="button" class="btn btn-sm btn-outline-secondary active" id="langEn">EN</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="langHi">हिं</button>
+        </div>
+        <div class="form-check form-switch">
+            <input id="darkModeToggle" class="form-check-input" type="checkbox" role="switch" />
+            <label class="form-check-label" for="darkModeToggle"><i class="bi bi-moon-stars-fill"></i></label>
+        </div>
+      </div>
+  </div>
+
+  <div class="container my-5">
+    <div id="toolbar">
+        <button id="openTemplatesBtn" class="btn btn-outline-primary"
+                data-bs-toggle="offcanvas" data-bs-target="#templatesOffcanvas"
+                aria-controls="templatesOffcanvas" title="Saved Templates">
+          <i class="bi bi-collection me-1"></i> <span data-lang-key="savedTemplates">Saved Templates</span>
+        </button>
+        <button id="openPapersBtn" class="btn btn-outline-success"
+                data-bs-toggle="offcanvas" data-bs-target="#papersOffcanvas"
+                aria-controls="papersOffcanvas" title="Generated Papers">
+          <i class="bi bi-journals me-1"></i> <span data-lang-key="generatedPapers">Generated Papers</span>
+        </button>
+    </div>
+    
+    <div class="text-center mb-5">
+      <h1 class="display-5 fw-bold" data-lang-key="title">Intelligent Paper Generator</h1>
+      <p class="lead" style="color:var(--muted)" data-lang-key="subtitle">Build assessments quickly.</p>
+    </div>
+
+    <div id="formContainer">
+        <div class="row g-5">
+        <div class="col-lg-10 col-xl-8 mx-auto">
+            <div class="main-card">
+            <div class="card-header">
+                <div class="progress"><div id="progressBar" class="progress-bar" role="progressbar" style="width:0%"></div></div>
+            </div>
+
+            <div class="card-body">
+                <form id="paperGeneratorForm" novalidate>
+                <div class="form-step active" id="step1">
+                    <h4 class="mb-4 fw-bold" data-lang-key="step1Title">Step 1: Core Details</h4>
+                    <div class="mb-4">
+                        <label class="form-label" data-lang-key="generationMode">Generation Mode</label>
+                        <div class="btn-group d-flex" role="group">
+                            <button type="button" class="btn btn-outline-secondary" id="modeTopicBtn" data-lang-key="byTopic">By Topic</button>
+                            <button type="button" class="btn btn-primary" id="modeClassBtn" data-lang-key="byClassAndChapters">By Class & Chapters</button>
+                        </div>
+                    </div>
+                    
+                    <div class="row g-3">
+                    <div class="col-12" id="topicField" style="display: none;">
+                        <label for="topic" class="form-label" data-lang-key="topic">Topic</label>
+                        <input type="text" class="form-control" id="topic" placeholder="e.g., Photosynthesis, Indian History">
+                    </div>
+
+            <div class="col-md-6" id="classField">
+                <label for="schoolBoard" class="form-label" data-lang-key="schoolBoard">School Board</label>
+                <select class="form-select" id="schoolBoard" required>
+                    <option value="" data-lang-key="selectBoard">Select Board...</option>
+                    <option value="CBSE">CBSE</option>
+                    <option value="ICSE">ICSE</option>
+                    <option value="State Board">State Board</option>
+                </select>
+            </div>
+
+            <div class="col-md-6">
+                <label for="paperLanguage" class="form-label">Paper Language</label>
+                <select class="form-select" id="paperLanguage">
+                    <option value="english" selected>English</option>
+                    <option value="hindi">Hindi</option>
+                </select>
+            </div>
+                    <div class="col-md-6" id="classSelectField">
+                        <label for="classSelect" class="form-label" data-lang-key="class">Class</label>
+                        <select class="form-select" id="classSelect" required>
+                            <option value="" data-lang-key="selectClass">Select Class...</option>
+                        </select>
+                    </div>
+                    <div class="col-12" id="subjectField">
+                        <label for="subjectSelect" class="form-label" data-lang-key="subject">Subject</label>
+                        <select class="form-select" id="subjectSelect" required>
+                            <option value="" data-lang-key="selectSubject">Select Subject...</option>
+                        </select>
+                    </div>
+                    <div class="col-12" id="chaptersField">
+                        <label class="form-label" data-lang-key="chapters">Select Chapters</label>
+                        <div class="mb-2 d-flex gap-2">
+                        <button type="button" id="selectAllChapters" class="btn btn-sm btn-outline-primary" disabled><i class="bi bi-check2-square me-1"></i><span data-lang-key="selectAll">Select All</span></button>
+                        <button type="button" id="deselectAllChapters" class="btn btn-sm btn-outline-secondary" disabled><i class="bi bi-x-square me-1"></i><span data-lang-key="deselectAll">Deselect All</span></button>
+                        </div>
+                        <div id="chaptersContainer">
+                        <small class="text-muted" data-lang-key="selectClassSubjectPrompt">Please select a board, class and subject to see chapters.</small>
+                        </div>
+                    </div>
+                    </div>
+
+                    <div class="d-flex justify-content-end mt-4">
+                    <button type="button" class="btn btn-primary next-btn"><span data-lang-key="next">Next</span> <i class="bi bi-arrow-right ms-1"></i></button>
+                    </div>
+                </div>
+
+                <div class="form-step" id="step2">
+                    <h4 class="mb-4 fw-bold" data-lang-key="step2Title">Step 2: Questions & Difficulty</h4>
+                    <div class="row g-3" id="questionTypesContainer"></div>
+                    
+                    <div class="d-flex justify-content-end mt-3">
+                        <div class="p-2 fw-bold" style="background-color: var(--border); border-radius: 8px;">
+                            <span data-lang-key="totalMarks">Total Marks</span>: <span id="step2TotalMarks">0</span>
+                        </div>
+                    </div>
+
+                    <hr class="my-4">
+                    <div>
+                        <label class="form-label fw-bold" data-lang-key="difficultyDistribution">Difficulty Distribution</label>
+                        <div class="distribution-bar-container">
+                        <div class="dist-labels">
+                            <div class="dist-label text-success"><span data-lang-key="easy">Easy</span>: <span class="badge text-bg-success" id="easyValueEl">40%</span></div>
+                            <div class="dist-label text-primary"><span data-lang-key="medium">Medium</span>: <span class="badge text-bg-primary" id="medValueEl">40%</span></div>
+                            <div class="dist-label text-danger"><span data-lang-key="hard">Hard</span>: <span class="badge text-bg-danger" id="hardValueEl">20%</span></div>
+                        </div>
+                        <div class="distribution-bar mt-2" id="distributionBar">
+                            <div class="dist-segment easy" id="easySeg"></div>
+                            <div class="dist-segment medium" id="medSeg"></div>
+                            <div class="dist-segment hard" id="hardSeg"></div>
+                            <div class="dist-handle" id="handle1" style="left:40%"></div>
+                            <div class="dist-handle" id="handle2" style="left:80%"></div>
+                        </div>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-4">
+                    <button type="button" class="btn btn-outline-secondary prev-btn"><i class="bi bi-arrow-left me-1"></i><span data-lang-key="previous">Previous</span></button>
+                    <button type="button" class="btn btn-primary next-btn"><span data-lang-key="next">Next</span> <i class="bi bi-arrow-right ms-1"></i></button>
+                    </div>
+                </div>
+
+<div class="form-step" id="step3">
+    <h4 class="mb-4 fw-bold" data-lang-key="step3Title">Step 3: Final Details & Generate</h4>
+    <div class="row g-4">
+        <div class="col-md-6">
+            <label for="examName" class="form-label" data-lang-key="examName">Examination Name</label>
+            <input type="text" class="form-control" id="examName" placeholder="e.g., Mid-Term Exam">
+        </div>
+        <div class="col-md-6">
+            <label for="schoolName" class="form-label" data-lang-key="schoolName">School Name</label>
+            <input type="text" class="form-control" id="schoolName" placeholder="e.g., Delhi Public School">
+        </div>
+    </div>
+
+<div id="finalPreviewBox" class="final-preview-box my-4">
+  <div class="final-preview-header justify-content-between">
+    <div> <i class="bi bi-clipboard-check me-2"></i>
+      <span data-lang-key="FinalPreview">Final Preview</span>
+    </div>
+    <button type="button" id="saveAsTemplateBtn" class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-save me-1"></i> <span data-lang-key="saveAsTemplate">Save as Template</span>
+    </button>
+  </div>
+  <div id="finalPreviewContent" class="preview-content p-3"></div>
+</div>
+
+
+
+    
+    <div class="d-flex justify-content-between mt-4">
+        <button type="button" class="btn btn-outline-secondary prev-btn"><i class="bi bi-arrow-left me-1"></i><span data-lang-key="previous">Previous</span></button>
+        <button type="button" id="generatePaperBtn" class="btn btn-success"><i class="bi bi-stars me-1"></i><span data-lang-key="generatePaper">Generate Paper</span></button>
+    </div>
+    
+    <div id="loadingIndicator" class="mt-4 text-center" style="display:none;">
+        <div class="spinner-border text-success" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="mt-2 fw-bold" data-lang-key="Generating your paper... Please wait.">Generating your paper... Please wait.</p>
+    </div>
+    <div id="liveGeneratedPaperContainer" class="mt-4"></div>
+</div>
+                </form>
+            </div>
+            </div>
+        </div>
+        </div>
+    </div>
+    
+    <div id="historyPreviewContainer" style="display: none;">
+        </div>
+
+  </div>
+
+  <div class="offcanvas offcanvas-start" tabindex="-1" id="templatesOffcanvas" aria-labelledby="templatesOffcanvasLabel">
+    <div class="offcanvas-header">
+      <h5 class="offcanvas-title" id="templatesOffcanvasLabel" data-lang-key="savedTemplates">Saved Templates</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <small class="text-muted" data-lang-key="templatesStoredLocally">Templates stored locally</small>
+        <button id="clearAllTemplates" class="btn btn-sm btn-outline-danger" data-lang-key="clearAll">Clear All</button>
+      </div>
+      <div id="savedTemplatesGrid" class="template-grid"></div>
+    </div>
+  </div>
+
+  <div class="offcanvas offcanvas-start" tabindex="-1" id="papersOffcanvas" aria-labelledby="papersOffcanvasLabel">
+    <div class="offcanvas-header">
+      <h5 class="offcanvas-title" id="papersOffcanvasLabel" data-lang-key="generatedPapers">Generated Papers</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+    </div>
+    <div class="offcanvas-body">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <small class="text-muted" data-lang-key="papersStoredLocally">Your past generated papers</small>
+        <button id="clearAllPapers" class="btn btn-sm btn-outline-danger" data-lang-key="clearAll">Clear All</button>
+      </div>
+      <div id="generatedPapersGrid" class="template-grid"></div>
+    </div>
+  </div>
+
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      
+        // --- STATE ---
+        let currentStep = 0;
+        let generationMode = 'class';
+
+      // --- DATA ---
+        let subjects = {};
+        let chaptersData = {};
+
+        const questionTypes = [
+            { id: 'MCQ', labelKey: 'mcq', defaultMarks: 1 }, { id: 'Fill', labelKey: 'fillInBlanks', defaultMarks: 1 },
+            { id: 'Short', labelKey: 'shortAnswer', defaultMarks: 3 }, { id: 'Long', labelKey: 'longAnswer', defaultMarks: 5 },
+            { id: 'Match', labelKey: 'matching', defaultMarks: 4 }, { id: 'Case', labelKey: 'caseStudy', defaultMarks: 5 }
+        ];
+        const langData = { en: {title: "Intelligent Paper Generator", subtitle: "Build assessments quickly.", savedTemplates: "Saved Templates", generatedPapers: "Generated Papers", step1Title: "Step 1: Core Details", generationMode: "Generation Mode", byTopic: "By Topic", byClassAndChapters: "By Class & Chapters", schoolBoard: "School Board", selectBoard: "Select Board...", class: "Class", selectClass: "Select Class...", subject: "Subject", selectSubject: "Select Subject...", chapters: "Chapters", selectAll: "Select All", deselectAll: "Deselect All", selectClassSubjectPrompt: "Please select a board, class and subject.", next: "Next", previous: "Previous", step2Title: "Step 2: Questions & Difficulty", mcq: "Multiple Choice", fillInBlanks: "Fill in the Blanks", shortAnswer: "Short Answer", longAnswer: "Long Answer", matching: "Matching", caseStudy: "Case Study", marks: "Marks", difficultyDistribution: "Difficulty Distribution", totalMarks: "Total Marks", step3Title: "Step 3: Final Details & Generate", examName: "Examination Name", schoolName: "School Name", generatePaper: "Generate Paper", easy: "Easy", medium: "Medium", hard: "Hard", templatesStoredLocally: "Templates stored locally", papersStoredLocally: "Your past generated papers", clearAll: "Clear All", backToGenerator: "Back to Generator", saveAsTemplate: "Save as Template"}, hi: { title: "इंटेलिजेंट पेपर जेनरेटर", subtitle: "आसानी से मूल्यांकन बनाएं।", savedTemplates: "सहेजे गए टेम्पलेट्स", generatedPapers: "जेनरेट किए गए पेपर", step1Title: "चरण 1: मुख्य विवरण", generationMode: "जनरेशन मोड", byTopic: "विषय के अनुसार", byClassAndChapters: "कक्षा और अध्याय के अनुसार", schoolBoard: "स्कूल बोर्ड", selectBoard: "बोर्ड चुनें...", class: "कक्षा", selectClass: "कक्षा चुनें...", subject: "विषय", selectSubject: "विषय चुनें...", chapters: "अध्याय", selectAll: "सभी चुनें", deselectAll: "सभी अचयनित करें", selectClassSubjectPrompt: "कृपया बोर्ड, कक्षा और विषय चुनें।", next: "अगला", previous: "पिछला", step2Title: "चरण 2: प्रश्न और कठिनाई", mcq: "बहुविकल्पीय", fillInBlanks: "रिक्त स्थान भरें", shortAnswer: "लघु उत्तरीय", longAnswer: "दीर्घ उत्तरीय", matching: "मिलान", caseStudy: "केस स्टडी", marks: "अंक", difficultyDistribution: "कठिनाई वितरण", totalMarks: "कुल अंक", step3Title: "चरण 3: अंतिम विवरण और जेनरेट", examName: "परीक्षा का नाम", schoolName: "स्कूल का नाम", generatePaper: "पेपर जेनरेट करें", easy: "आसान", medium: "मध्यम", hard: "कठिन", templatesStoredLocally: "टेम्पलेट्स स्थानीय रूप से संग्रहीत", papersStoredLocally: "आपके पिछले उत्पन्न पेपर", clearAll: "सभी साफ़ करें", backToGenerator: "जेनरेटर पर वापस जाएं", saveAsTemplate: "टेम्पलेट के रूप में सहेजें" }};
+
+        // --- DOM ELEMENTS ---
+        const formContainer = document.getElementById('formContainer');
+        const historyPreviewContainer = document.getElementById('historyPreviewContainer');
+        const steps = Array.from(document.querySelectorAll('.form-step'));
+        const progressBar = document.getElementById('progressBar');
+        const [modeTopicBtn, modeClassBtn] = [document.getElementById('modeTopicBtn'), document.getElementById('modeClassBtn')];
+        const classRelatedFields = ['classField', 'classSelectField', 'subjectField', 'chaptersField'].map(id => document.getElementById(id));
+        const topicField = document.getElementById('topicField');
+        const [schoolBoard, classSelect, subjectSelect, chaptersContainer, topicInput, examName, schoolName] = [document.getElementById('schoolBoard'), document.getElementById('classSelect'), document.getElementById('subjectSelect'), document.getElementById('chaptersContainer'), document.getElementById('topic'), document.getElementById('examName'), document.getElementById('schoolName')];
+        const [selectAllChaptersBtn, deselectAllChaptersBtn] = [document.getElementById('selectAllChapters'), document.getElementById('deselectAllChapters')];
+        const qTypesContainer = document.getElementById('questionTypesContainer');
+        const [handle1, handle2, easySeg, medSeg, hardSeg, easyValueEl, medValueEl, hardValueEl] = [document.getElementById('handle1'), document.getElementById('handle2'), document.getElementById('easySeg'), document.getElementById('medSeg'), document.getElementById('hardSeg'), document.getElementById('easyValueEl'), document.getElementById('medValueEl'), document.getElementById('hardValueEl')];
+        const [darkModeToggle, langEnBtn, langHiBtn] = [document.getElementById('darkModeToggle'), document.getElementById('langEn'), document.getElementById('langHi')];
+        const step2TotalMarks = document.getElementById('step2TotalMarks');
+        const savedTemplatesGrid = document.getElementById('savedTemplatesGrid');
+        const clearAllTemplatesBtn = document.getElementById('clearAllTemplates');
+        const generatePaperBtn = document.getElementById('generatePaperBtn');
+        const liveGeneratedPaperContainer = document.getElementById('liveGeneratedPaperContainer');
+        const generatedPapersGrid = document.getElementById('generatedPapersGrid');
+        const clearAllPapersBtn = document.getElementById('clearAllPapers');
+        const saveAsTemplateBtn = document.getElementById('saveAsTemplateBtn');
+
+        // --- UI TOGGLING & NAVIGATION ---
+        const showGeneratorView = () => {
+            historyPreviewContainer.style.display = 'none';
+            formContainer.style.display = 'block';
+            document.querySelector('.text-center.mb-5').style.display = 'block';
+        };
+
+        const showHistoryPreview = (htmlContent) => {
+            formContainer.style.display = 'none';
+            document.querySelector('.text-center.mb-5').style.display = 'none';
+            historyPreviewContainer.innerHTML = htmlContent;
+            historyPreviewContainer.style.display = 'block';
+        };
+
+        const getLangText = key => langData[document.documentElement.lang || 'en'][key] || key;
+        
+        const switchLanguage = (lang) => {
+            document.documentElement.lang = lang;
+            document.querySelectorAll('[data-lang-key]').forEach(el => {
+                const key = el.dataset.langKey;
+                if(key) el.textContent = getLangText(key);
+            });
+            langHiBtn.classList.toggle('active', lang === 'hi');
+            langEnBtn.classList.toggle('active', lang === 'en');
+            populateSubjects();
+            injectQuestionTypes();
+            updateStep2Totals();
+        };
+
+          const showStep = (idx) => {
+              if (idx > currentStep && !validateStep(currentStep)) return;
+              steps.forEach((s, i) => s.classList.toggle('active', i === idx));
+              currentStep = idx;
+              progressBar.style.width = (currentStep / (steps.length - 1)) * 100 + '%';
+              
+              // This new check triggers the preview on the last step
+              if (idx === 2) { 
+                  updateFinalPreview();
+              }
+        };
+
+        const validateStep = (idx) => {
+            const stepEl = steps[idx];
+            const requireds = stepEl.querySelectorAll('input[required]:not(:disabled), select[required]:not(:disabled)');
+            let ok = true;
+            requireds.forEach(el => {
+                if (!el.value || el.value === '') {
+                    el.classList.add('is-invalid');
+                    ok = false;
+                } else {
+                    el.classList.remove('is-invalid');
+                }
+            });
+            return ok;
+        };
+
+
+  async function fetchAcademicData() {
+      try {
+        const response = await fetch('/api/academic-data');
+        if (!response.ok) throw new Error('Failed to fetch data');
+
+        const data = await response.json();
+
+        // Assign the fetched data to your global variables
+        subjects = data.subjects;
+        chaptersData = data.chapters;
+
+        console.log("Fetched Subjects:", subjects);
+        console.log("Fetched Chapters:", chaptersData);
+
+        // Now start the original chain of populating dropdowns
+        populateClasses();
+
+    } catch (error) {
+        console.error("Error fetching academic data:", error);
+        // You could show an error message to the user here
+    }
+  }
+
+
+        
+        // --- GENERATION MODE ---
+        const setGenerationMode = (mode) => {
+            generationMode = mode;
+            const isTopic = mode === 'topic';
+            modeTopicBtn.classList.toggle('btn-primary', isTopic);
+            modeTopicBtn.classList.toggle('btn-outline-secondary', !isTopic);
+            modeClassBtn.classList.toggle('btn-primary', !isTopic);
+            modeClassBtn.classList.toggle('btn-outline-secondary', isTopic);
+            
+            topicField.style.display = isTopic ? 'block' : 'none';
+            topicInput.required = isTopic;
+            topicInput.disabled = !isTopic;
+            
+            classRelatedFields.forEach(field => field.style.display = isTopic ? 'none' : 'block');
+            [schoolBoard, classSelect, subjectSelect].forEach(el => { el.required = !isTopic; el.disabled = isTopic; });
+        };
+
+        // --- DYNAMIC FORM FIELDS ---
+        const populateClasses = () => {
+            const board = schoolBoard.value;
+            classSelect.innerHTML = `<option value="">${getLangText('selectClass')}</option>`;
+            subjectSelect.innerHTML = `<option value="">${getLangText('selectSubject')}</option>`;
+            clearChapters();
+
+            if (board && subjects[board]) {
+                const classNumbers = Object.keys(subjects[board]).sort((a, b) => a - b);
+
+                for (const classNum of classNumbers) {
+                    classSelect.add(new Option(classNum, classNum));
+                }
+            }
+        };
+
+        const populateSubjects = () => {
+            const board = schoolBoard.value;
+            const cls = classSelect.value;
+            const currentLang = document.documentElement.lang || 'en';
+            subjectSelect.innerHTML = `<option value="">${getLangText('selectSubject')}</option>`;
+            clearChapters();
+            if (board && cls && subjects[board] && subjects[board][cls]) {
+                subjects[board][cls].forEach(subject => {
+                    const option = document.createElement('option');
+                    option.value = subject.en; // Use English name as the internal value
+                    option.textContent = subject[currentLang] || subject.en; // Display text in the selected language
+                    subjectSelect.appendChild(option);
+                });
+            }
+        };
+
+        const populateChapters = () => {
+            const board = schoolBoard.value;
+            const cls = classSelect.value;
+            const subj = subjectSelect.value; // This is the English name
+            clearChapters();
+
+            const chapters = chaptersData?.[board]?.[cls]?.[subj] || [];
+            if (!chapters.length) {
+                clearChapters('No chapters available for this selection.');
+                return;
+            }
+
+            const currentLang = document.documentElement.lang || 'en';
+            chapters.forEach((ch, idx) => {
+                const div = document.createElement('div');
+                div.className = 'form-check';
+
+                // THIS IS THE KEY CHANGE: Select title based on language
+                const chapterTitle = ch[currentLang] || ch.en; 
+                const chapterValue = ch.en; // We'll use the English title as the unique value for the checkbox
+
+                div.innerHTML = `<input class="form-check-input chapter-checkbox" type="checkbox" id="chap-${idx}" value="${chapterValue}"><label class="form-check-label" for="chap-${idx}">${chapterTitle}</label>`;
+                chaptersContainer.appendChild(div);
+            });
+            selectAllChaptersBtn.disabled = false;
+            deselectAllChaptersBtn.disabled = false;
+        };
+
+        const clearChapters = (msg = getLangText('selectClassSubjectPrompt')) => {
+            chaptersContainer.innerHTML = `<small class="text-muted">${msg}</small>`;
+            selectAllChaptersBtn.disabled = true;
+            deselectAllChaptersBtn.disabled = true;
+        };
+        
+        const injectQuestionTypes = () => {
+            const values = {};
+            qTypesContainer.querySelectorAll('.question-count').forEach((el, idx) => { values[idx] = el.value });
+
+            qTypesContainer.innerHTML = questionTypes.map((q, idx) => `
+              <div class="col-md-6 question-type-group">
+                <label class="form-label fw-bold">${getLangText(q.labelKey)}</label>
+                <div class="row g-2">
+                  <div class="col-6">
+                    <div class="input-group">
+                      <span class="input-group-text">#</span>
+                      <input type="number" class="form-control question-count" value="${values[idx] || 0}" min="0" required>
+                    </div>
+                  </div>
+                  <div class="col-6">
+                    <div class="input-group">
+                      <span class="input-group-text">${getLangText('marks')}</span>
+                      <input type="number" class="form-control marks-per-question" value="${q.defaultMarks}" min="1" required>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `).join('');
+        };
+        
+        const updateStep2Totals = () => {
+            let totalM = 0;
+            qTypesContainer.querySelectorAll('.question-type-group').forEach(group => {
+                const count = parseInt(group.querySelector('.question-count').value) || 0;
+                const marks = parseInt(group.querySelector('.marks-per-question').value) || 0;
+                totalM += count * marks;
+            });
+            step2TotalMarks.textContent = totalM;
+        };
+
+
+
+        function updateFinalPreview() {
+    const payload = buildPayload();
+    const contentEl = document.getElementById('finalPreviewContent');
+    if (!contentEl) return;
+
+    let totalQ = 0;
+    let totalM = 0;
+    Object.values(payload.questionDistribution).forEach(dist => {
+        totalQ += dist.count;
+        totalM += dist.count * dist.marks;
+    });
+
+    let html = `
+      <div class="preview-title">
+        <div class="exam-name">${payload.examName || ''}</div>
+        <div class="school-name">${payload.schoolName || ''}</div>
+      </div>
+      <div class="preview-divider"></div>
+      <div class="preview-section">
+        <div class="preview-item"><span><strong>${getLangText('schoolBoard')}</strong></span><span>${payload.schoolBoard || 'Not set'}</span></div>
+        <div class="preview-item"><span><strong>${getLangText('class')}</strong></span><span>${payload.class || 'Not set'}</span></div>
+        <div class="preview-item"><span><strong>${getLangText('subject')}</strong></span><span>${payload.subject || 'Not set'}</span></div>
+      </div>
+      <div class="preview-divider"></div>
+      <div class="preview-section">
+        <div class="preview-item"><span><strong>Total Questions</strong></span><span>${totalQ}</span></div>
+        <div class="preview-item"><span><strong>${getLangText('totalMarks')}</strong></span><span>${totalM}</span></></div>
+      </div>
+    `;
+
+    contentEl.innerHTML = html;
+}
+
+
+
+        // --- DIFFICULTY SLIDER LOGIC ---
+        let activeHandle = null;
+
+        function updateDistribution() {
+            const p1 = parseFloat(handle1.style.left);
+            const p2 = parseFloat(handle2.style.left);
+            const easyPercent = Math.round(p1);
+            const medPercent = Math.round(p2 - p1);
+            const hardPercent = 100 - easyPercent - medPercent;
+            
+            easySeg.style.width = easyPercent + '%';
+            medSeg.style.width = medPercent + '%';
+            hardSeg.style.width = hardPercent + '%';
+            
+            easyValueEl.textContent = easyPercent + '%';
+            medValueEl.textContent = medPercent + '%';
+            hardValueEl.textContent = hardPercent + '%';
+        }
+
+        const onMouseMove = (moveEvent) => {
+            if (!activeHandle) return;
+            const rect = document.getElementById('distributionBar').getBoundingClientRect();
+            let percent = ((moveEvent.clientX - rect.left) / rect.width) * 100;
+            percent = Math.max(0, Math.min(100, percent));
+            if (activeHandle.id === 'handle1') {
+                percent = Math.min(percent, parseFloat(handle2.style.left));
+            } else { 
+                percent = Math.max(percent, parseFloat(handle1.style.left));
+            }
+            activeHandle.style.left = percent + '%';
+            updateDistribution();
+        };
+
+        const onMouseUp = () => {
+            if (activeHandle) {
+                document.body.style.cursor = 'default';
+                activeHandle = null;
+            }
+        };
+        
+        function activateHandle(handle, event) {
+            event.preventDefault();
+            document.body.style.cursor = 'ew-resize';
+            activeHandle = handle;
+        }
+
+        // --- PAYLOAD & GENERATION ---
+function buildPayload(){
+            const payload = {
+              examName: examName.value.trim(),
+              schoolName: schoolName.value.trim(),
+              schoolBoard: schoolBoard.value,
+              class: classSelect.value,
+              subject: subjectSelect.value,
+              paperLanguage: document.getElementById('paperLanguage').value, // <-- ADDED THIS LINE
+              topic: topicInput.value.trim(), // <-- ADD THIS LINE FOR TOPIC
+              chapters: Array.from(chaptersContainer.querySelectorAll('.chapter-checkbox:checked')).map(cb => cb.value),
+              questionDistribution: {},
+              difficultyDistribution: {}
+            };
+            document.querySelectorAll('.question-type-group').forEach(group => {
+              const displayedLabel = group.querySelector('.form-label.fw-bold').textContent.trim();
+              const typeInfo = questionTypes.find(qt => getLangText(qt.labelKey) === displayedLabel);
+              const backendId = typeInfo ? typeInfo.id : displayedLabel;
+
+              const count = parseInt(group.querySelector('.question-count').value || '0', 10);
+              const marks = parseInt(group.querySelector('.marks-per-question').value || '1', 10);
+              if (count > 0) payload.questionDistribution[backendId] = { count, marks };
+            });
+
+            payload.difficultyDistribution = { Easy: parseInt(easyValueEl.textContent), Medium: parseInt(medValueEl.textContent), Hard: parseInt(hardValueEl.textContent) };
+            return payload;
+        }
+
+        // --- TEMPLATES ---
+        function saveTemplate(){
+            const payload = buildPayload();
+            const store = JSON.parse(localStorage.getItem('qp_templates') || '[]');
+            const name = (payload.schoolName || 'Template') + ' — ' + (payload.subject || 'Subject') + ' (Class ' + (payload.class || '?') + ')';
+            const tpl = { name, data: payload, createdAt: new Date().toISOString() };
+            store.push(tpl);
+            localStorage.setItem('qp_templates', JSON.stringify(store));
+            renderTemplates();
+        }
+
+        function renderTemplates(){
+            const list = JSON.parse(localStorage.getItem('qp_templates') || '[]');
+            savedTemplatesGrid.innerHTML = '';
+            if (!list.length) {
+              savedTemplatesGrid.innerHTML = '<div class="text-muted">No saved templates</div>';
+              return;
+            }
+            list.forEach((tpl, idx) => {
+              const card = document.createElement('div');
+              card.className = 'template-card';
+              card.innerHTML = `
+                <div>
+                  <h6 class="mb-1" style="font-size:0.95rem;">${tpl.name}</h6>
+                  <div class="small text-muted">${new Date(tpl.createdAt).toLocaleString()}</div>
+                  <div class="small mb-2 mt-2"><strong>Board:</strong> ${tpl.data.schoolBoard} &nbsp; <strong>Class:</strong> ${tpl.data.class}</div>
+                  <div class="mb-2"><strong>Subject:</strong> ${tpl.data.subject}</div>
+                </div>
+                <div class="d-flex gap-2 mt-auto pt-2">
+                  <button class="btn btn-sm btn-primary load-btn" data-idx="${idx}"><i class="bi bi-box-arrow-in-down me-1"></i>Load</button>
+                  <button class="btn btn-sm btn-danger del-btn" data-idx="${idx}"><i class="bi bi-trash me-1"></i>Delete</button>
+                </div>
+              `;
+              savedTemplatesGrid.appendChild(card);
+            });
+
+            savedTemplatesGrid.querySelectorAll('.load-btn').forEach(b => b.addEventListener('click', () => {
+              const idx = parseInt(b.dataset.idx,10);
+              applyTemplate(JSON.parse(localStorage.getItem('qp_templates') || '[]')[idx]);
+              const offcanvasEl = document.getElementById('templatesOffcanvas');
+              const bs = bootstrap.Offcanvas.getInstance(offcanvasEl) || new bootstrap.Offcanvas(offcanvasEl);
+              bs.hide();
+            }));
+
+            savedTemplatesGrid.querySelectorAll('.del-btn').forEach(b => b.addEventListener('click', () => {
+              const idx = parseInt(b.dataset.idx,10);
+              if (!confirm('Delete this template?')) return;
+              let list = JSON.parse(localStorage.getItem('qp_templates') || '[]');
+              list.splice(idx,1);
+              localStorage.setItem('qp_templates', JSON.stringify(list));
+              renderTemplates();
+            }));
+        }
+        
+        function applyTemplate(tpl){
+            if (!tpl || !tpl.data) return;
+            const d = tpl.data;
+            showGeneratorView(); // Ensure form is visible
+            schoolName.value = d.schoolName || '';
+            examName.value = d.examName || '';
+            schoolBoard.value = d.schoolBoard || '';
+            
+            if (d.class) {
+              classSelect.value = d.class;
+              populateSubjects();
+            }
+            
+            setTimeout(()=> {
+              subjectSelect.value = d.subject || '';
+              populateChapters();
+              setTimeout(() => {
+                (d.chapters || []).forEach(chapterValue => {
+                    const cb = chaptersContainer.querySelector(`input[value="${chapterValue}"]`);
+                    if (cb) cb.checked = true;
+                });
+              }, 100);
+
+              if (d.questionDistribution) {
+                document.querySelectorAll('.question-type-group').forEach(group => {
+                  const labelKey = Object.keys(langData.en).find(key => langData.en[key] === group.querySelector('.form-label.fw-bold').textContent.trim());
+                  const typeId = questionTypes.find(qt => qt.labelKey === labelKey)?.id;
+                  const info = d.questionDistribution[typeId];
+                  group.querySelector('.question-count').value = info ? info.count : 0;
+                  group.querySelector('.marks-per-question').value = info ? info.marks : group.querySelector('.marks-per-question').value;
+                });
+                updateStep2Totals();
+              }
+              
+              if (d.difficultyDistribution) {
+                handle1.style.left = d.difficultyDistribution.Easy + '%';
+                handle2.style.left = (d.difficultyDistribution.Easy + d.difficultyDistribution.Medium) + '%';
+                updateDistribution();
+              }
+              showStep(0);
+            }, 150);
+        }
+
+        // --- GENERATED PAPERS HISTORY ---
+        function saveGeneratedPaper(paperData) {
+            let papers = JSON.parse(localStorage.getItem('qp_papers') || '[]');
+            const newPaper = {
+                id: Date.now(),
+                examName: paperData.examName || examName.value.trim(),
+                schoolName: paperData.schoolName || schoolName.value.trim(),
+                schoolBoard: paperData.schoolBoard || schoolBoard.value,
+                class: paperData.class || classSelect.value,
+                subject: paperData.subject || subjectSelect.value,
+                questionTotals: paperData.summary || {},
+                questions: paperData.questions || [],
+                pdf_url: paperData.pdf_url,
+                word_url: paperData.word_url,
+                answer_key_url: paperData.answer_key_url
+            };
+            papers.unshift(newPaper);
+            localStorage.setItem('qp_papers', JSON.stringify(papers));
+            renderGeneratedPapers();
+        }
+
+        function renderGeneratedPapers() {
+            const papers = JSON.parse(localStorage.getItem('qp_papers') || '[]');
+            generatedPapersGrid.innerHTML = '';
+            if (!papers.length) {
+              generatedPapersGrid.innerHTML = `<div class="text-muted">No papers generated yet.</div>`;
+              return;
+            }
+            
+            generatedPapersGrid.innerHTML = papers.map((p, idx) => `
+                <div class="template-card" style="cursor: pointer;" data-paper-index="${idx}">
+                  <h6>${p.examName || 'Untitled Exam'}</h6>
+                  <small>Class ${p.class || '-'} - ${p.subject || '-'}</small><br>
+                  <small>Total Q: ${p.questionTotals?.total_questions || 0}, Marks: ${p.questionTotals?.total_marks || 0}</small>
+                </div>
+            `).join('');
+
+            generatedPapersGrid.querySelectorAll('.template-card').forEach(card => {
+                card.addEventListener('click', () => {
+                    openSavedPaper(card.dataset.paperIndex);
+                });
+            });
+        }
+
+function openSavedPaper(index) {
+            const papers = JSON.parse(localStorage.getItem('qp_papers') || '[]');
+            const p = papers[index];
+            if (!p) return;
+
+            const previewHtml = `
+                <div class="row justify-content-center">
+                    <div class="col-lg-10 col-xl-8">
+                        <div class="main-card p-4">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h4 class="mb-0">${p.examName || 'Untitled Exam'}</h4>
+                                <button class="btn btn-outline-primary" id="backToGeneratorBtn">
+                                    <i class="bi bi-arrow-left me-1"></i> <span data-lang-key="backToGenerator">Back to Generator</span>
+                                </button>
+                            </div>
+                            <p><b>School:</b> ${p.schoolName || '-'} | <b>Board:</b> ${p.schoolBoard || '-'}</p>
+                            <p><b>Class:</b> ${p.class || '-'} | <b>Subject:</b> ${p.subject || '-'}</p>
+                            <p><b>Total Questions:</b> ${p.questionTotals?.total_questions || 0}, <b>Total Marks:</b> ${p.questionTotals?.total_marks || 0}</p>
+                            
+                            <div class="d-flex gap-2 my-3">
+                                ${p.pdf_url ? `<a href="${p.pdf_url}" class="btn btn-sm btn-outline-primary" target="_blank"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>` : ""}
+                                ${p.word_url ? `<a href="${p.word_url}" class="btn btn-sm btn-outline-secondary" target="_blank"><i class="bi bi-file-earmark-word me-1"></i>Download Word</a>` : ""}
+                                ${p.answer_key_url ? `<a href="${p.answer_key_url}" class="btn btn-sm btn-outline-success" target="_blank"><i class="bi bi-journal-text me-1"></i>Download Answer Key</a>` : ""}
+                            </div>
+
+                            <hr>
+                            <h6>Questions:</h6>
+                            <div class="questions-list" style="padding: 0.5rem; background-color: var(--bg); border-radius: 8px;">
+                                ${(p.questions || []).map((q, i) => `
+                                    <div class="mb-3">
+                                        <b>Q${i+1}.</b> ${q.question_text || q.question}
+                                        <div>
+                                            <span class="badge bg-secondary">${q.marks || 0} marks</span>
+                                            <span class="badge bg-info">${q.type || 'N/A'}</span>
+                                            <span class="badge bg-warning text-dark">${q.difficulty || 'N/A'}</span>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            showHistoryPreview(previewHtml);
+            
+            const backBtn = document.getElementById('backToGeneratorBtn').querySelector('span');
+            backBtn.textContent = getLangText(backBtn.dataset.langKey);
+
+            document.getElementById('backToGeneratorBtn').addEventListener('click', showGeneratorView);
+
+            const offcanvasEl = document.getElementById('papersOffcanvas');
+            const bs = bootstrap.Offcanvas.getInstance(offcanvasEl) || new bootstrap.Offcanvas(offcanvasEl);
+            bs.hide();
+        }
+        
+        // --- EVENT LISTENERS ---
+        document.addEventListener('click', (e) => {
+            if (e.target.closest('.next-btn')) showStep(currentStep + 1);
+            if (e.target.closest('.prev-btn')) showStep(currentStep - 1);
+        });
+        
+        qTypesContainer.addEventListener('input', updateStep2Totals);
+        [modeTopicBtn, modeClassBtn].forEach(btn => btn.addEventListener('click', (e) => setGenerationMode(e.target.id === 'modeTopicBtn' ? 'topic' : 'class')));
+        schoolBoard.addEventListener('change', populateClasses);
+        classSelect.addEventListener('change', populateSubjects);
+        subjectSelect.addEventListener('change', populateChapters);
+        examName.addEventListener('input', updateFinalPreview);
+schoolName.addEventListener('input', updateFinalPreview);
+
+        selectAllChaptersBtn.addEventListener('click', () => chaptersContainer.querySelectorAll('.chapter-checkbox').forEach(cb => cb.checked = true));
+        deselectAllChaptersBtn.addEventListener('click', () => chaptersContainer.querySelectorAll('.chapter-checkbox').forEach(cb => cb.checked = false));
+        
+        handle1.addEventListener('mousedown', (e) => activateHandle(handle1, e));
+        handle2.addEventListener('mousedown', (e) => activateHandle(handle2, e));
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+
+        darkModeToggle.addEventListener('change', () => {
+            const theme = darkModeToggle.checked ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-bs-theme', theme);
+            localStorage.setItem('darkMode', theme);
+        });
+        
+        [langEnBtn, langHiBtn].forEach(btn => btn.addEventListener('click', (e) => switchLanguage(e.target.id === 'langEn' ? 'en' : 'hi')));
+
+        clearAllTemplatesBtn.addEventListener('click', () => {
+            if (!confirm('Clear all saved templates?')) return;
+            localStorage.removeItem('qp_templates');
+            renderTemplates();
+        });
+
+        clearAllPapersBtn.addEventListener('click', () => {
+            if (!confirm('Clear all generated papers?')) return;
+            localStorage.removeItem('qp_papers');
+            renderGeneratedPapers();
+        });
+
+        saveAsTemplateBtn.addEventListener('click', () => {
+            saveTemplate();
+            alert('Template saved successfully!'); // Optional: provide user feedback
+        });
+
+        generatePaperBtn.addEventListener('click', async () => {
+            if (!validateStep(currentStep)) return;
+            const payload = buildPayload();
+            // --- START: UX IMPROVEMENT CODE ---
+            generatePaperBtn.disabled = true; // Disable the button to prevent double-clicks
+            document.getElementById('loadingIndicator').style.display = 'block'; // Show the spinner
+            liveGeneratedPaperContainer.innerHTML = ''; // Clear previous results
+            // --- END: UX IMPROVEMENT CODE ---
+
+            try {
+                const res = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error(`API error: ${res.statusText}`);
+                const data = await res.json();
+                
+                saveGeneratedPaper(data);
+
+                const questions = data.questions || [];
+                const summary = data.summary || {};
+                const pdfUrl = data.pdf_url || '#';
+                const wordUrl = data.word_url || '#';
+                const answerUrl = data.answer_key_url || '#';
+
+                liveGeneratedPaperContainer.innerHTML = `
+                  <div class="border rounded p-3 mt-4">
+                    <h5 class="mb-3">Generated Paper Preview</h5>
+                    <p><strong>Total Questions:</strong> ${summary.total_questions || 0}</p>
+                    <p><strong>Total Marks:</strong> ${summary.total_marks || 0}</p>
+                    
+                    <div class="d-flex gap-2 my-3">
+                      <a href="${pdfUrl}" target="_blank" class="btn btn-outline-primary btn-sm"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>
+                      <a href="${wordUrl}" target="_blank" class="btn btn-outline-secondary btn-sm"><i class="bi bi-file-earmark-word me-1"></i>Download Word</a>
+                      <a href="${answerUrl}" target="_blank" class="btn btn-outline-success btn-sm"><i class="bi bi-journal-text me-1"></i>Download Answer Key</a>
+                    </div>
+
+                    <hr>
+                    <h6>Questions:</h6>
+                    <div class="questions-list" style="padding: 0.5rem; background-color: var(--bg); border-radius: 8px;">
+                        ${questions.map((q, i) => `
+                            <div class="mb-3">
+                                <b>Q${i+1}.</b> ${q.question_text || 'Question text not provided.'}
+                                <div>
+                                    <span class="badge bg-secondary">${q.marks || 0} marks</span>
+                                    <span class="badge bg-info">${q.type || 'N/A'}</span>
+                                    <span class="badge bg-warning text-dark">${q.difficulty || 'N/A'}</span>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                  </div>
+                `;
+                
+          if (window.MathJax) {
+              MathJax.typeset();
+          }
+        // ----------------------------
+            } catch (err) {
+                console.error("Generation failed:", err);
+                liveGeneratedPaperContainer.innerHTML = `<div class="alert alert-danger mt-4">Failed to generate paper. Please check the console for errors.</div>`;
+            }   finally {
+        // --- START: UX IMPROVEMENT CLEANUP CODE ---
+                generatePaperBtn.disabled = false; // Re-enable the button
+                document.getElementById('loadingIndicator').style.display = 'none'; // Hide the spinner
+                // --- END: UX IMPROVEMENT CLEANUP CODE ---
+                    }
+        });
+
+        // --- INITIALIZATION ---
+        const savedTheme = localStorage.getItem('darkMode');
+        if (savedTheme === 'dark') {
+            darkModeToggle.checked = true;
+            document.documentElement.setAttribute('data-bs-theme', 'dark');
+        }
+        
+        fetchAcademicData();
+        injectQuestionTypes();
+        showStep(0);
+        setGenerationMode('class');
+        switchLanguage('en');
+        renderTemplates();
+        renderGeneratedPapers();
+        updateStep2Totals();
+        updateDistribution();
+    });
+  </script>
+</body>
+</html>
