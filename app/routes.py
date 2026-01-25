@@ -897,14 +897,14 @@ def download_answer_key(paper_id):
 
 
 
-    @main.route("/db-test")
-    def db_test():
-        try:
+@main.route("/db-test")
+def db_test():
+    try:
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("SELECT 1;")
             cur.close()
             conn.close()
             return "✅ PostgreSQL connected successfully"
-        except Exception as e:
-            return f"❌ DB error: {e}"
+    except Exception as e:
+        return f"❌ DB error: {e}"
