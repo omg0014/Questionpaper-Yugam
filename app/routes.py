@@ -20,7 +20,7 @@ from reportlab.pdfgen import canvas
 import google.generativeai as genai
 from .models import Question, Paper, PaperQuestion, Visitor, Board, Class, Subject, Chapter
 from . import db
-from db import get_db_connection
+from .db import get_db_connection
 
 
 main = Blueprint("main", __name__)
