@@ -897,7 +897,7 @@ def download_answer_key(paper_id):
 
 
 
-    @routes.route("/db-test")
+    @main.route("/db-test")
     def db_test():
         try:
             conn = get_db_connection()
