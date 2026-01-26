@@ -7,21 +7,32 @@ import google.generativeai as genai
 load_dotenv()
 
 db = SQLAlchemy()
+
+# Configure Gemini API
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
 
 def create_app():
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
-    # --- Database Configuration START ---
-    database_url = os.getenv("DATABASE_URL")
+    # -------------------------------
+    # Database Configuration (MySQL / FreeDB)
+    # -------------------------------
+    DB_HOST = os.getenv("DB_HOST")
+    DB_PORT = os.getenv("DB_PORT", "3306")
+    DB_NAME = os.getenv("DB_NAME")
+    DB_USER = os.getenv("DB_USER")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
 
-    if database_url:
-        app.config["SQLALCHEMY_DATABASE_URI"] = database_url
-        print("--- Using PostgreSQL via DATABASE_URL ---")
+    if all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]):
+        app.config["SQLALCHEMY_DATABASE_URI"] = (
+            f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@"
+            f"{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        )
+        print("--- Using FreeDB MySQL ---")
     else:
         app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///dev.db"
-        print("--- Using SQLite fallback ---")
-    # --- Database Configuration END ---
+        print("--- Using SQLite fallback (local dev) ---")
 
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["JSON_SORT_KEYS"] = False

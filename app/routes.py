@@ -20,7 +20,6 @@ from reportlab.pdfgen import canvas
 import google.generativeai as genai
 from .models import Question, Paper, PaperQuestion, Visitor, Board, Class, Subject, Chapter
 from . import db
-from .db import get_db_connection
 
 
 main = Blueprint("main", __name__)
@@ -29,14 +28,11 @@ main = Blueprint("main", __name__)
 @main.route("/db-test")
 def db_test():
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT 1;")
-        cur.close()
-        conn.close()
-        return "✅ PostgreSQL connected successfully"
+        db.session.execute("SELECT 1")
+        return "✅ FreeDB MySQL connected successfully!"
     except Exception as e:
         return f"❌ DB error: {e}"
+
 
 
 
