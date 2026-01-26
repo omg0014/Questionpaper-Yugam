@@ -41,9 +41,13 @@ def create_app():
 
     with app.app_context():
         from . import models  # noqa: F401
-        db.create_all()
+
+    # Only create tables in local development
+        if os.getenv("FLASK_ENV") != "production":
+            db.create_all()
 
         from .routes import main as main_bp
         app.register_blueprint(main_bp)
+
 
     return app
