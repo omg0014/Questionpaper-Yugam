@@ -29,7 +29,7 @@ main = Blueprint("main", __name__)
 def db_test():
     try:
         db.session.execute("SELECT 1")
-        return "✅ FreeDB MySQL connected successfully!"
+        return "✅ Database connected successfully!"
     except Exception as e:
         return f"❌ DB error: {e}"
 
