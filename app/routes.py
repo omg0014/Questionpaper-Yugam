@@ -33,6 +33,12 @@ def db_test():
     except Exception as e:
         return f"❌ DB error: {e}"
 
+@main.route("/debug-questions")
+def debug_questions():
+    from .models import Question
+    return {"count": Question.query.count()}
+
+
 
 
 
