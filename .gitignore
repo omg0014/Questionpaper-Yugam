@@ -1,5 +1,22 @@
 venv/
+.venv/
 .env
+.env.local
 __pycache__/
 *.pyc
+*.pyo
 .DS_Store
+.idea/
+.vscode/
+
+# Generated paper artifacts (do not commit user-generated PDFs/DOCX/JSON)
+app/static/papers/
+generated/
+
+# SQLite default fallback DB
+app.db
+instance/
+
+# OS / editor
+Thumbs.db
+*.swp

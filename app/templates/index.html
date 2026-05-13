@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Simptions Intelligent Paper Generator — Full</title>
+  <title>Intelligent Paper Generator</title>
 
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+Devanagari:wght@400;500;700&display=swap" rel="stylesheet">
 
   <style>
     /* --- Color variables & themes --- */
@@ -141,7 +143,9 @@
 
 
 
-    html,body{ height:100%; background:var(--bg); color:var(--text); font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; }
+    html,body{ height:100%; background:var(--bg); color:var(--text); font-family:Inter,'Noto Sans Devanagari',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+    /* Make the question/answer text use a font that supports Devanagari conjuncts properly. */
+    .question-body, .question-options, .question-meta, .result-meta { font-family:'Noto Sans Devanagari',Inter,system-ui,sans-serif; }
 
     /* Cards & layout */
     .main-card, .offcanvas { background:var(--card); border:1px solid var(--border); }
@@ -183,7 +187,88 @@
     .template-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:1rem; }
     .template-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; display:flex; flex-direction:column; justify-content:space-between; min-height:120px; }
 
-    #toolbar { position: absolute; top: 0; left: 0; display: flex; flex-direction: column; gap: 10px; padding: 1rem; }
+    /* ----- Top navbar (unified controls) ----- */
+    .app-navbar {
+      position: sticky;
+      top: 0;
+      z-index: 1030;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: saturate(180%) blur(8px);
+    }
+    .app-navbar .brand {
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      text-decoration: none;
+      font-size: 1.05rem;
+    }
+    .app-navbar .brand .brand-mark {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+      display: inline-flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 1rem;
+    }
+    .app-navbar .nav-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .app-navbar .lang-group .btn { padding: 0.25rem 0.55rem; font-size: 0.78rem; }
+    .app-navbar .dark-toggle { margin: 0; padding-left: 0.25rem; }
+    .app-navbar .form-check-input { cursor: pointer; }
+
+    /* ----- Step indicator ----- */
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      padding: 0.25rem 0;
+      flex-wrap: wrap;
+    }
+    .stepper .step {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      font-weight: 600;
+    }
+    .stepper .step .step-circle {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--bg);
+      border: 2px solid var(--border);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 0.85rem; color: var(--muted);
+      transition: all 0.2s ease;
+    }
+    .stepper .step.active { color: var(--text); }
+    .stepper .step.active .step-circle {
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+      color: #fff;
+    }
+    .stepper .step.done .step-circle {
+      background: var(--easy);
+      border-color: var(--easy);
+      color: #fff;
+    }
+    .stepper .step-divider {
+      width: 32px; height: 2px;
+      background: var(--border);
+      margin: 0 0.25rem;
+      border-radius: 1px;
+    }
+    @media (max-width: 575px) {
+      .stepper .step .step-label { display: none; }
+      .stepper .step-divider { width: 18px; }
+    }
+
+    /* Hero */
+    .hero { text-align: center; padding: 2rem 0 1.5rem; }
+    .hero h1 { font-weight: 700; font-size: clamp(1.6rem, 4vw, 2.1rem); margin: 0 0 0.35rem; }
+    .hero p { color: var(--muted); margin: 0; font-size: 0.98rem; }
 
     /* Dark Mode Overrides */
     [data-bs-theme="dark"] .form-control,
@@ -198,40 +283,155 @@
     [data-bs-theme="dark"] .offcanvas { background-image: none; }
     [data-bs-theme="dark"] .btn-outline-secondary { color: var(--text) !important; border-color: var(--border) !important; }
     [data-bs-theme="dark"] .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+
+    /* ----- Generation panel (loading + skeleton) ----- */
+    .generation-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.25rem 1.25rem 1rem;
+      box-shadow: 0 4px 14px var(--shadow);
+    }
+    .skeleton-slot {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 0.6rem;
+      transition: all 0.25s ease-in-out;
+    }
+    .skeleton-slot.skeleton-filled {
+      border-color: rgba(34, 197, 94, 0.35);
+      box-shadow: 0 1px 4px var(--shadow);
+      padding: 0;
+    }
+
+    /* ----- Result card ----- */
+    .result-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.25rem;
+      margin-top: 1rem;
+      box-shadow: 0 4px 14px var(--shadow);
+    }
+    .result-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      padding-bottom: 0.9rem;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .result-head h5 { color: var(--text); }
+    .result-meta {
+      display: flex;
+      gap: 1rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .result-actions {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .questions-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    @media (min-width: 992px) {
+      .questions-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    /* ----- Individual question card ----- */
+    .question-card {
+      background: var(--bs-body-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      transition: box-shadow 0.2s ease, transform 0.2s ease;
+    }
+    .question-card:hover {
+      box-shadow: 0 4px 14px var(--shadow);
+      transform: translateY(-1px);
+    }
+    .question-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .question-number {
+      font-weight: 700;
+      color: var(--primary-color);
+      letter-spacing: 0.02em;
+    }
+    .question-marks {
+      font-size: 0.82rem;
+      color: var(--muted);
+      background: var(--bg);
+      border-radius: 999px;
+      padding: 2px 10px;
+    }
+    .question-body {
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .question-options {
+      margin: 0.6rem 0 0;
+      padding-left: 1.3rem;
+      color: var(--text);
+    }
+    .question-options li { margin-bottom: 0.2rem; }
+    .question-meta {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      margin-top: 0.75rem;
+      padding-top: 0.55rem;
+      border-top: 1px dashed var(--border);
+    }
+    .question-meta .badge { font-weight: 500; font-size: 0.72rem; }
   </style>
 </head>
 <body>
   
-  <div class="position-fixed top-0 end-0 p-3" style="z-index:1050;">
-      <div class="d-flex align-items-center gap-2">
-        <div class="btn-group" role="group">
-            <button type="button" class="btn btn-sm btn-outline-secondary active" id="langEn">EN</button>
-            <button type="button" class="btn btn-sm btn-outline-secondary" id="langHi">हिं</button>
+  <nav class="app-navbar">
+    <div class="container py-2 d-flex align-items-center justify-content-between gap-3 flex-wrap">
+      <a href="/" class="brand">
+        <span class="brand-mark"><i class="bi bi-stars"></i></span>
+        <span data-lang-key="title">Intelligent Paper Generator</span>
+      </a>
+      <div class="nav-controls">
+        <button id="openTemplatesBtn" class="btn btn-sm btn-outline-primary"
+                data-bs-toggle="offcanvas" data-bs-target="#templatesOffcanvas"
+                aria-controls="templatesOffcanvas">
+          <i class="bi bi-collection me-1"></i><span class="d-none d-md-inline" data-lang-key="savedTemplates">Saved Templates</span>
+        </button>
+        <button id="openPapersBtn" class="btn btn-sm btn-outline-success"
+                data-bs-toggle="offcanvas" data-bs-target="#papersOffcanvas"
+                aria-controls="papersOffcanvas">
+          <i class="bi bi-journals me-1"></i><span class="d-none d-md-inline" data-lang-key="generatedPapers">Generated Papers</span>
+        </button>
+        <div class="btn-group lang-group" role="group" aria-label="Language">
+          <button type="button" class="btn btn-outline-secondary active" id="langEn">EN</button>
+          <button type="button" class="btn btn-outline-secondary" id="langHi">हिं</button>
         </div>
-        <div class="form-check form-switch">
-            <input id="darkModeToggle" class="form-check-input" type="checkbox" role="switch" />
-            <label class="form-check-label" for="darkModeToggle"><i class="bi bi-moon-stars-fill"></i></label>
+        <div class="form-check form-switch dark-toggle">
+          <input id="darkModeToggle" class="form-check-input" type="checkbox" role="switch" />
+          <label class="form-check-label" for="darkModeToggle" title="Toggle dark mode"><i class="bi bi-moon-stars-fill"></i></label>
         </div>
       </div>
-  </div>
-
-  <div class="container my-5">
-    <div id="toolbar">
-        <button id="openTemplatesBtn" class="btn btn-outline-primary"
-                data-bs-toggle="offcanvas" data-bs-target="#templatesOffcanvas"
-                aria-controls="templatesOffcanvas" title="Saved Templates">
-          <i class="bi bi-collection me-1"></i> <span data-lang-key="savedTemplates">Saved Templates</span>
-        </button>
-        <button id="openPapersBtn" class="btn btn-outline-success"
-                data-bs-toggle="offcanvas" data-bs-target="#papersOffcanvas"
-                aria-controls="papersOffcanvas" title="Generated Papers">
-          <i class="bi bi-journals me-1"></i> <span data-lang-key="generatedPapers">Generated Papers</span>
-        </button>
     </div>
-    
-    <div class="text-center mb-5">
-      <h1 class="display-5 fw-bold" data-lang-key="title">Intelligent Paper Generator</h1>
-      <p class="lead" style="color:var(--muted)" data-lang-key="subtitle">Build assessments quickly.</p>
+  </nav>
+
+  <div class="container my-4">
+    <div class="hero">
+      <h1 data-lang-key="title">Intelligent Paper Generator</h1>
+      <p data-lang-key="subtitle">Build assessments quickly.</p>
     </div>
 
     <div id="formContainer">
@@ -239,7 +439,25 @@
         <div class="col-lg-10 col-xl-8 mx-auto">
             <div class="main-card">
             <div class="card-header">
-                <div class="progress"><div id="progressBar" class="progress-bar" role="progressbar" style="width:0%"></div></div>
+              <div class="stepper" id="stepperEl">
+                <div class="step" data-step="0">
+                  <span class="step-circle">1</span>
+                  <span class="step-label" data-lang-key="step1ShortTitle">Details</span>
+                </div>
+                <div class="step-divider"></div>
+                <div class="step" data-step="1">
+                  <span class="step-circle">2</span>
+                  <span class="step-label" data-lang-key="step2ShortTitle">Questions</span>
+                </div>
+                <div class="step-divider"></div>
+                <div class="step" data-step="2">
+                  <span class="step-circle">3</span>
+                  <span class="step-label" data-lang-key="step3ShortTitle">Generate</span>
+                </div>
+              </div>
+              <div class="progress mt-3" style="height:4px;">
+                <div id="progressBar" class="progress-bar" role="progressbar" style="width:0%"></div>
+              </div>
             </div>
 
             <div class="card-body">
@@ -373,11 +591,22 @@
         <button type="button" id="generatePaperBtn" class="btn btn-success"><i class="bi bi-stars me-1"></i><span data-lang-key="generatePaper">Generate Paper</span></button>
     </div>
     
-    <div id="loadingIndicator" class="mt-4 text-center" style="display:none;">
-        <div class="spinner-border text-success" role="status">
-            <span class="visually-hidden">Loading...</span>
+    <div id="loadingIndicator" class="generation-panel mt-4" style="display:none;">
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <div class="spinner-grow spinner-grow-sm text-success" role="status"></div>
+        <span id="genPhaseLabel" class="fw-semibold">Preparing…</span>
+      </div>
+      <div class="progress" style="height: 6px;">
+        <div id="genProgressBar" class="progress-bar bg-success progress-bar-striped progress-bar-animated"
+             role="progressbar" style="width: 8%;"></div>
+      </div>
+      <div id="skeletonPaper" class="mt-4">
+        <div class="placeholder-glow mb-3">
+          <span class="placeholder col-7 mb-2" style="height:1.5rem;"></span><br>
+          <span class="placeholder col-4" style="height:1rem;"></span>
         </div>
-        <p class="mt-2 fw-bold" data-lang-key="Generating your paper... Please wait.">Generating your paper... Please wait.</p>
+        <div id="skeletonQuestions"></div>
+      </div>
     </div>
     <div id="liveGeneratedPaperContainer" class="mt-4"></div>
 </div>
@@ -439,7 +668,7 @@
             { id: 'Short', labelKey: 'shortAnswer', defaultMarks: 3 }, { id: 'Long', labelKey: 'longAnswer', defaultMarks: 5 },
             { id: 'Match', labelKey: 'matching', defaultMarks: 4 }, { id: 'Case', labelKey: 'caseStudy', defaultMarks: 5 }
         ];
-        const langData = { en: {title: "Intelligent Paper Generator", subtitle: "Build assessments quickly.", savedTemplates: "Saved Templates", generatedPapers: "Generated Papers", step1Title: "Step 1: Core Details", generationMode: "Generation Mode", byTopic: "By Topic", byClassAndChapters: "By Class & Chapters", schoolBoard: "School Board", selectBoard: "Select Board...", class: "Class", selectClass: "Select Class...", subject: "Subject", selectSubject: "Select Subject...", chapters: "Chapters", selectAll: "Select All", deselectAll: "Deselect All", selectClassSubjectPrompt: "Please select a board, class and subject.", next: "Next", previous: "Previous", step2Title: "Step 2: Questions & Difficulty", mcq: "Multiple Choice", fillInBlanks: "Fill in the Blanks", shortAnswer: "Short Answer", longAnswer: "Long Answer", matching: "Matching", caseStudy: "Case Study", marks: "Marks", difficultyDistribution: "Difficulty Distribution", totalMarks: "Total Marks", step3Title: "Step 3: Final Details & Generate", examName: "Examination Name", schoolName: "School Name", generatePaper: "Generate Paper", easy: "Easy", medium: "Medium", hard: "Hard", templatesStoredLocally: "Templates stored locally", papersStoredLocally: "Your past generated papers", clearAll: "Clear All", backToGenerator: "Back to Generator", saveAsTemplate: "Save as Template"}, hi: { title: "इंटेलिजेंट पेपर जेनरेटर", subtitle: "आसानी से मूल्यांकन बनाएं।", savedTemplates: "सहेजे गए टेम्पलेट्स", generatedPapers: "जेनरेट किए गए पेपर", step1Title: "चरण 1: मुख्य विवरण", generationMode: "जनरेशन मोड", byTopic: "विषय के अनुसार", byClassAndChapters: "कक्षा और अध्याय के अनुसार", schoolBoard: "स्कूल बोर्ड", selectBoard: "बोर्ड चुनें...", class: "कक्षा", selectClass: "कक्षा चुनें...", subject: "विषय", selectSubject: "विषय चुनें...", chapters: "अध्याय", selectAll: "सभी चुनें", deselectAll: "सभी अचयनित करें", selectClassSubjectPrompt: "कृपया बोर्ड, कक्षा और विषय चुनें।", next: "अगला", previous: "पिछला", step2Title: "चरण 2: प्रश्न और कठिनाई", mcq: "बहुविकल्पीय", fillInBlanks: "रिक्त स्थान भरें", shortAnswer: "लघु उत्तरीय", longAnswer: "दीर्घ उत्तरीय", matching: "मिलान", caseStudy: "केस स्टडी", marks: "अंक", difficultyDistribution: "कठिनाई वितरण", totalMarks: "कुल अंक", step3Title: "चरण 3: अंतिम विवरण और जेनरेट", examName: "परीक्षा का नाम", schoolName: "स्कूल का नाम", generatePaper: "पेपर जेनरेट करें", easy: "आसान", medium: "मध्यम", hard: "कठिन", templatesStoredLocally: "टेम्पलेट्स स्थानीय रूप से संग्रहीत", papersStoredLocally: "आपके पिछले उत्पन्न पेपर", clearAll: "सभी साफ़ करें", backToGenerator: "जेनरेटर पर वापस जाएं", saveAsTemplate: "टेम्पलेट के रूप में सहेजें" }};
+        const langData = { en: {step1ShortTitle: "Details", step2ShortTitle: "Questions", step3ShortTitle: "Generate", title: "Intelligent Paper Generator", subtitle: "Build assessments quickly.", savedTemplates: "Saved Templates", generatedPapers: "Generated Papers", step1Title: "Step 1: Core Details", generationMode: "Generation Mode", byTopic: "By Topic", byClassAndChapters: "By Class & Chapters", schoolBoard: "School Board", selectBoard: "Select Board...", class: "Class", selectClass: "Select Class...", subject: "Subject", selectSubject: "Select Subject...", chapters: "Chapters", selectAll: "Select All", deselectAll: "Deselect All", selectClassSubjectPrompt: "Please select a board, class and subject.", next: "Next", previous: "Previous", step2Title: "Step 2: Questions & Difficulty", mcq: "Multiple Choice", fillInBlanks: "Fill in the Blanks", shortAnswer: "Short Answer", longAnswer: "Long Answer", matching: "Matching", caseStudy: "Case Study", marks: "Marks", difficultyDistribution: "Difficulty Distribution", totalMarks: "Total Marks", step3Title: "Step 3: Final Details & Generate", examName: "Examination Name", schoolName: "School Name", generatePaper: "Generate Paper", easy: "Easy", medium: "Medium", hard: "Hard", templatesStoredLocally: "Templates stored locally", papersStoredLocally: "Your past generated papers", clearAll: "Clear All", backToGenerator: "Back to Generator", saveAsTemplate: "Save as Template"}, hi: { step1ShortTitle: "विवरण", step2ShortTitle: "प्रश्न", step3ShortTitle: "जेनरेट करें", title: "इंटेलिजेंट पेपर जेनरेटर", subtitle: "आसानी से मूल्यांकन बनाएं।", savedTemplates: "सहेजे गए टेम्पलेट्स", generatedPapers: "जेनरेट किए गए पेपर", step1Title: "चरण 1: मुख्य विवरण", generationMode: "जनरेशन मोड", byTopic: "विषय के अनुसार", byClassAndChapters: "कक्षा और अध्याय के अनुसार", schoolBoard: "स्कूल बोर्ड", selectBoard: "बोर्ड चुनें...", class: "कक्षा", selectClass: "कक्षा चुनें...", subject: "विषय", selectSubject: "विषय चुनें...", chapters: "अध्याय", selectAll: "सभी चुनें", deselectAll: "सभी अचयनित करें", selectClassSubjectPrompt: "कृपया बोर्ड, कक्षा और विषय चुनें।", next: "अगला", previous: "पिछला", step2Title: "चरण 2: प्रश्न और कठिनाई", mcq: "बहुविकल्पीय", fillInBlanks: "रिक्त स्थान भरें", shortAnswer: "लघु उत्तरीय", longAnswer: "दीर्घ उत्तरीय", matching: "मिलान", caseStudy: "केस स्टडी", marks: "अंक", difficultyDistribution: "कठिनाई वितरण", totalMarks: "कुल अंक", step3Title: "चरण 3: अंतिम विवरण और जेनरेट", examName: "परीक्षा का नाम", schoolName: "स्कूल का नाम", generatePaper: "पेपर जेनरेट करें", easy: "आसान", medium: "मध्यम", hard: "कठिन", templatesStoredLocally: "टेम्पलेट्स स्थानीय रूप से संग्रहीत", papersStoredLocally: "आपके पिछले उत्पन्न पेपर", clearAll: "सभी साफ़ करें", backToGenerator: "जेनरेटर पर वापस जाएं", saveAsTemplate: "टेम्पलेट के रूप में सहेजें" }};
 
         // --- DOM ELEMENTS ---
         const formContainer = document.getElementById('formContainer');
@@ -492,14 +721,29 @@
             updateStep2Totals();
         };
 
+          const updateStepper = (idx) => {
+              const items = document.querySelectorAll('#stepperEl .step');
+              items.forEach((el, i) => {
+                  el.classList.remove('active', 'done');
+                  if (i < idx) el.classList.add('done');
+                  else if (i === idx) el.classList.add('active');
+                  const circle = el.querySelector('.step-circle');
+                  if (circle) {
+                      circle.innerHTML = (i < idx) ? '<i class="bi bi-check-lg"></i>' : (i + 1);
+                  }
+              });
+          };
+
           const showStep = (idx) => {
               if (idx > currentStep && !validateStep(currentStep)) return;
               steps.forEach((s, i) => s.classList.toggle('active', i === idx));
               currentStep = idx;
               progressBar.style.width = (currentStep / (steps.length - 1)) * 100 + '%';
-              
+              updateStepper(idx);
+              window.scrollTo({ top: document.querySelector('.main-card').offsetTop - 80, behavior: 'smooth' });
+
               // This new check triggers the preview on the last step
-              if (idx === 2) { 
+              if (idx === 2) {
                   updateFinalPreview();
               }
         };
@@ -1018,74 +1262,203 @@ schoolName.addEventListener('input', updateFinalPreview);
             alert('Template saved successfully!'); // Optional: provide user feedback
         });
 
+        // --- Helpers for skeleton + streaming UX ---
+        function buildSkeleton(payload) {
+            const slots = [];
+            const dist = payload.questionDistribution || {};
+            Object.keys(dist).forEach(qtype => {
+                const count = parseInt(dist[qtype]?.count || 0, 10);
+                for (let i = 0; i < count; i++) {
+                    slots.push(`
+                      <div class="skeleton-slot placeholder-glow" data-slot="${slots.length}">
+                        <div class="px-3 py-2">
+                          <span class="placeholder col-1"></span>
+                          <span class="placeholder col-8 ms-2"></span>
+                          <span class="placeholder col-2 float-end"></span>
+                          <br>
+                          <span class="placeholder col-10 mt-2"></span>
+                        </div>
+                      </div>`);
+                }
+            });
+            return slots.join('');
+        }
+        function setPhase(label, pct) {
+            const lbl = document.getElementById('genPhaseLabel');
+            const bar = document.getElementById('genProgressBar');
+            if (lbl) lbl.textContent = label;
+            if (bar) bar.style.width = `${Math.min(98, Math.max(8, pct))}%`;
+        }
+        function escapeHTML(s) {
+            return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        function difficultyClass(d) {
+            const k = String(d || '').toLowerCase();
+            if (k.startsWith('easy')) return 'bg-success-subtle text-success-emphasis';
+            if (k.startsWith('hard')) return 'bg-danger-subtle text-danger-emphasis';
+            return 'bg-primary-subtle text-primary-emphasis';
+        }
+        function questionCardHTML(q, index) {
+            const text = escapeHTML(q.question_text || q.question || '');
+            const optionsHtml = (Array.isArray(q.options) && q.options.length)
+                ? `<ol type="a" class="question-options">${q.options.map(o => `<li>${escapeHTML(o)}</li>`).join('')}</ol>`
+                : '';
+            const type = escapeHTML(q.type || q.question_type || '');
+            const diff = escapeHTML(q.difficulty || '');
+            const marks = Number(q.marks || 0);
+            return `
+              <article class="question-card">
+                <header class="question-card-head">
+                  <span class="question-number">Q${index + 1}</span>
+                  <span class="question-marks">${marks} ${marks === 1 ? 'mark' : 'marks'}</span>
+                </header>
+                <div class="question-body">${text}</div>
+                ${optionsHtml}
+                <footer class="question-meta">
+                  ${type ? `<span class="badge rounded-pill bg-secondary-subtle text-secondary-emphasis">${type}</span>` : ''}
+                  ${diff ? `<span class="badge rounded-pill ${difficultyClass(diff)}">${diff}</span>` : ''}
+                </footer>
+              </article>`;
+        }
+        function fillSlot(index, q) {
+            const slot = document.querySelector(`.skeleton-slot[data-slot="${index}"]`);
+            if (!slot) return;
+            slot.classList.remove('placeholder-glow');
+            slot.classList.add('skeleton-filled');
+            slot.innerHTML = questionCardHTML(q, index);
+        }
+        function renderFinalSummary(data, questionsList) {
+            const pdfUrl = data.pdf_url || '#';
+            const wordUrl = data.word_url || '#';
+            const answerUrl = data.answer_key_url || '#';
+            const summary = data.summary || {};
+            // Prefer the authoritative final list from the server (includes backfilled questions);
+            // fall back to the per-event streamed list only if the server didn't send a final list.
+            const serverQs = data.questions || [];
+            const qs = serverQs.length ? serverQs : (questionsList || []);
+            const totalQs = summary.total_questions || qs.length;
+            const totalMarks = summary.total_marks || qs.reduce((s, q) => s + Number(q.marks || 0), 0);
+            const questionsHtml = qs.map((q, i) => questionCardHTML(q, i)).join('');
+            const html = `
+              <section class="result-card">
+                <header class="result-head">
+                  <div>
+                    <h5 class="mb-1">Paper ready</h5>
+                    <div class="result-meta">
+                      <span><i class="bi bi-list-ol me-1"></i>${totalQs} questions</span>
+                      <span><i class="bi bi-award me-1"></i>${totalMarks} marks</span>
+                    </div>
+                  </div>
+                  <div class="result-actions">
+                    <a href="${pdfUrl}" target="_blank" class="btn btn-primary btn-sm"><i class="bi bi-file-earmark-pdf me-1"></i>PDF</a>
+                    <a href="${wordUrl}" target="_blank" class="btn btn-outline-secondary btn-sm"><i class="bi bi-file-earmark-word me-1"></i>Word</a>
+                    <a href="${answerUrl}" target="_blank" class="btn btn-outline-success btn-sm"><i class="bi bi-journal-text me-1"></i>Answer Key</a>
+                  </div>
+                </header>
+                <div class="questions-grid">
+                  ${questionsHtml || '<em class="text-muted">No questions returned.</em>'}
+                </div>
+              </section>`;
+            liveGeneratedPaperContainer.innerHTML = html;
+        }
+
+        async function generateWithStreaming(payload, collectedQuestions) {
+            return new Promise((resolve, reject) => {
+                let finalData = null;
+                fetch('/api/generate/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                    body: JSON.stringify(payload),
+                }).then(async (res) => {
+                    if (!res.ok || !res.body) {
+                        const txt = await res.text().catch(() => '');
+                        return reject(new Error(txt || `stream API ${res.status}`));
+                    }
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buf = '';
+                    let pct = 12;
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buf += decoder.decode(value, { stream: true });
+                        let idx;
+                        while ((idx = buf.indexOf('\n\n')) !== -1) {
+                            const ev = buf.slice(0, idx);
+                            buf = buf.slice(idx + 2);
+                            const lines = ev.split('\n');
+                            let event = 'message', data = '';
+                            for (const ln of lines) {
+                                if (ln.startsWith('event:')) event = ln.slice(6).trim();
+                                else if (ln.startsWith('data:')) data += ln.slice(5).trim();
+                            }
+                            let parsed;
+                            try { parsed = JSON.parse(data); } catch { continue; }
+                            if (event === 'phase') {
+                                const phase = parsed.phase;
+                                if (phase === 'connecting') setPhase('Preparing your paper…', 15);
+                                else if (phase === 'generating') setPhase('Crafting questions…', 30);
+                                else if (phase === 'rendering') setPhase('Finalizing paper…', 90);
+                            } else if (event === 'question') {
+                                pct = Math.min(85, pct + 8);
+                                setPhase(`Generating questions… (${parsed.index + 1})`, pct);
+                                fillSlot(parsed.index, parsed.question);
+                                if (parsed.question) collectedQuestions.push(parsed.question);
+                            } else if (event === 'chunk') {
+                                // chunk events are informational; nothing to render here
+                            } else if (event === 'done') {
+                                setPhase('Done', 100);
+                                finalData = parsed;
+                            } else if (event === 'error') {
+                                return reject(new Error(parsed.message || 'stream error'));
+                            }
+                        }
+                    }
+                    if (!finalData) return reject(new Error('Stream ended without "done" event.'));
+                    resolve(finalData);
+                }).catch(reject);
+            });
+        }
+
         generatePaperBtn.addEventListener('click', async () => {
             if (!validateStep(currentStep)) return;
             const payload = buildPayload();
-            // --- START: UX IMPROVEMENT CODE ---
-            generatePaperBtn.disabled = true; // Disable the button to prevent double-clicks
-            document.getElementById('loadingIndicator').style.display = 'block'; // Show the spinner
-            liveGeneratedPaperContainer.innerHTML = ''; // Clear previous results
-            // --- END: UX IMPROVEMENT CODE ---
+            generatePaperBtn.disabled = true;
+            const loading = document.getElementById('loadingIndicator');
+            loading.style.display = 'block';
+            document.getElementById('skeletonQuestions').innerHTML = buildSkeleton(payload);
+            setPhase('Preparing your paper…', 8);
+            liveGeneratedPaperContainer.innerHTML = '';
 
             try {
-                const res = await fetch('/api/generate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!res.ok) throw new Error(`API error: ${res.statusText}`);
-                const data = await res.json();
-                
+                let data;
+                const collectedQuestions = [];
+                try {
+                    data = await generateWithStreaming(payload, collectedQuestions);
+                } catch (streamErr) {
+                    console.warn('Streaming path failed, falling back to one-shot:', streamErr);
+                    setPhase('Crafting questions…', 40);
+                    const res = await fetch('/api/generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!res.ok) {
+                        const errBody = await res.json().catch(() => ({}));
+                        throw new Error(errBody.error || `API error: ${res.statusText}`);
+                    }
+                    data = await res.json();
+                }
                 saveGeneratedPaper(data);
-
-                const questions = data.questions || [];
-                const summary = data.summary || {};
-                const pdfUrl = data.pdf_url || '#';
-                const wordUrl = data.word_url || '#';
-                const answerUrl = data.answer_key_url || '#';
-
-                liveGeneratedPaperContainer.innerHTML = `
-                  <div class="border rounded p-3 mt-4">
-                    <h5 class="mb-3">Generated Paper Preview</h5>
-                    <p><strong>Total Questions:</strong> ${summary.total_questions || 0}</p>
-                    <p><strong>Total Marks:</strong> ${summary.total_marks || 0}</p>
-                    
-                    <div class="d-flex gap-2 my-3">
-                      <a href="${pdfUrl}" target="_blank" class="btn btn-outline-primary btn-sm"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>
-                      <a href="${wordUrl}" target="_blank" class="btn btn-outline-secondary btn-sm"><i class="bi bi-file-earmark-word me-1"></i>Download Word</a>
-                      <a href="${answerUrl}" target="_blank" class="btn btn-outline-success btn-sm"><i class="bi bi-journal-text me-1"></i>Download Answer Key</a>
-                    </div>
-
-                    <hr>
-                    <h6>Questions:</h6>
-                    <div class="questions-list" style="padding: 0.5rem; background-color: var(--bg); border-radius: 8px;">
-                        ${questions.map((q, i) => `
-                            <div class="mb-3">
-                                <b>Q${i+1}.</b> ${q.question_text || 'Question text not provided.'}
-                                <div>
-                                    <span class="badge bg-secondary">${q.marks || 0} marks</span>
-                                    <span class="badge bg-info">${q.type || 'N/A'}</span>
-                                    <span class="badge bg-warning text-dark">${q.difficulty || 'N/A'}</span>
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                  </div>
-                `;
-                
-          if (window.MathJax) {
-              MathJax.typeset();
-          }
-        // ----------------------------
+                renderFinalSummary(data, collectedQuestions);
+                if (window.MathJax) MathJax.typeset();
             } catch (err) {
                 console.error("Generation failed:", err);
-                liveGeneratedPaperContainer.innerHTML = `<div class="alert alert-danger mt-4">Failed to generate paper. Please check the console for errors.</div>`;
-            }   finally {
-        // --- START: UX IMPROVEMENT CLEANUP CODE ---
-                generatePaperBtn.disabled = false; // Re-enable the button
-                document.getElementById('loadingIndicator').style.display = 'none'; // Hide the spinner
-                // --- END: UX IMPROVEMENT CLEANUP CODE ---
-                    }
+                liveGeneratedPaperContainer.innerHTML = `<div class="alert alert-danger mt-4">Failed to generate paper: ${err.message || err}</div>`;
+            } finally {
+                generatePaperBtn.disabled = false;
+                setTimeout(() => { loading.style.display = 'none'; }, 400);
+            }
         });
 
         // --- INITIALIZATION ---

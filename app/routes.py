@@ -4,7 +4,8 @@ import re
 import uuid
 import io
 from datetime import datetime
-from flask import Blueprint, request, jsonify, render_template, current_app, send_file, render_template_string, make_response
+from flask import Blueprint, request, jsonify, render_template, current_app, send_file, render_template_string, make_response, Response, stream_with_context
+from pydantic import ValidationError
 from sqlalchemy.sql.expression import func
 from sqlalchemy.orm import joinedload
 from docx import Document
@@ -17,25 +18,36 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
-import google.generativeai as genai
 from .models import Question, Paper, PaperQuestion, Visitor, Board, Class, Subject, Chapter
-from . import db
+from .ai_providers import generate_with_fallback, stream_with_fallback, ProviderError, available_providers
+from .schemas import GenerateRequest, AIQuestion
+from .prompts import build_topic_prompt, build_class_prompt, build_language_instruction
+from . import db, limiter
 
 
 main = Blueprint("main", __name__)
 
 
+def _debug_enabled() -> bool:
+    return os.getenv("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+
+
 @main.route("/db-test")
 def db_test():
+    if not _debug_enabled():
+        return jsonify({"error": "not found"}), 404
     try:
-        db.session.execute("SELECT 1")
-        return "✅ Database connected successfully!"
+        from sqlalchemy import text
+        db.session.execute(text("SELECT 1"))
+        return "Database connected successfully."
     except Exception as e:
-        return f"❌ DB error: {e}"
+        return f"DB error: {e}", 500
+
 
 @main.route("/debug-questions")
 def debug_questions():
-    from .models import Question
+    if not _debug_enabled():
+        return jsonify({"error": "not found"}), 404
     return {"count": Question.query.count()}
 
 
@@ -180,217 +192,338 @@ def _normalize_qtype(label):
     if label in ["Case Study", "Case"]: return "Case Study"
     return label
 
-@main.route("/api/generate", methods=["POST"])
-def generate_paper():
-    data = request.get_json()
-    current_app.logger.info(f"Incoming /api/generate payload: {data}")
-
-    subject = data.get("subject")
-    class_ = data.get("class")
-    board = data.get("schoolBoard")
-    school = data.get("schoolName")
-    qdist = data.get("questionDistribution", {})
-    ddist = data.get("difficultyDistribution", {})
-    exam_name = data.get("examName")
-    paper_language = data.get("paperLanguage", "english")
-    topic = data.get("topic", "")  # Get topic if provided
-    chapters = data.get("chapters", [])  # Get chapters if provided
-    questions = []
-
-    # Get or create visitor
-    visitor = get_or_create_visitor()
-    
-    # More robust topic detection
-    topic_present = bool(topic and topic.strip())
-    current_app.logger.info(f"Topic received: '{topic}'")
-    current_app.logger.info(f"Topic stripped: '{topic.strip()}'")
-    current_app.logger.info(f"Topic bool check: {topic_present}")
-    current_app.logger.info(f"Using topic-based generation: {topic_present}")
-    
-    # Log all the data to debug
-    current_app.logger.info(f"All data received: {data}")
-    
-    # Test if API key is working
-    try:
-        current_app.logger.info("Testing Google Generative AI API key")
-        model = genai.GenerativeModel('models/gemini-flash-latest')
-        test_response = model.generate_content("Say 'Hello, World!' in one word.")
-        current_app.logger.info(f"API key test response: {test_response.text.strip()}")
-    except Exception as e:
-        current_app.logger.error(f"API key test failed: {e}")
-    
-    qdist_str_parts = []
+def _build_qdist_string(qdist: dict) -> str:
+    """Verbose, count-aware breakdown so the LLM is less likely to under-deliver."""
+    parts = []
+    grand_total_q = 0
+    grand_total_marks = 0
     for qtype, info in qdist.items():
-        count = info.get('count', 0)
+        if not isinstance(info, dict):
+            continue
+        count = int(info.get("count", 0) or 0)
+        marks = int(info.get("marks", 0) or 0)
         if count > 0:
-            qdist_str_parts.append(f"- {count} {qtype} question(s)")
-    qdist_prompt_str = "\n".join(qdist_str_parts)
-    
-    language_instruction = ""
-    if paper_language == "hindi" and subject.lower() != "english":
-        language_instruction = "You MUST generate the entire question paper, including questions, options, answers, and explanations, strictly in Hindi using Unicode characters."
-    elif paper_language == "english" or subject.lower() == "english":
-        language_instruction = "You MUST generate the entire question paper, including questions, options, answers, and explanations, strictly in English."
+            parts.append(f"- EXACTLY {count} {qtype} question(s), each worth {marks} marks "
+                         f"(subtotal: {count * marks} marks)")
+            grand_total_q += count
+            grand_total_marks += count * marks
+    if grand_total_q:
+        parts.append(f"\nGRAND TOTAL: {grand_total_q} questions, {grand_total_marks} marks. "
+                     f"You MUST return exactly {grand_total_q} questions — no fewer.")
+    return "\n".join(parts)
+
+
+def _parse_ai_json(raw_text: str) -> list:
+    """Parse the LLM's response into a list of question dicts.
+
+    Handles raw JSON, fenced ```json blocks, and best-effort recovery.
+    """
+    if not raw_text:
+        raise ValueError("AI returned empty response.")
+    raw_text = raw_text.strip()
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        m = re.search(r"```(?:json)?\s*(.*?)```", raw_text, re.DOTALL)
+        if m:
+            data = json.loads(m.group(1))
+        else:
+            m2 = re.search(r"\[\s*\{.*\}\s*\]", raw_text, re.DOTALL)
+            if not m2:
+                raise ValueError("AI returned invalid JSON.")
+            data = json.loads(m2.group(0))
+    if isinstance(data, dict):
+        for key in ("questions", "data", "items"):
+            if key in data and isinstance(data[key], list):
+                data = data[key]
+                break
+    if not isinstance(data, list):
+        raise ValueError("AI response was not a JSON array of questions.")
+    return data
+
+
+def _validate_questions(raw_list: list, paper_language: str) -> list[dict]:
+    """Validate each AI question through Pydantic; drop bad ones."""
+    out = []
+    for raw in raw_list:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            q = AIQuestion(**raw).model_dump()
+        except ValidationError as ve:
+            current_app.logger.warning("Dropping malformed AI question: %s", ve)
+            continue
+        q["question_type"] = _normalize_qtype(q.get("type"))
+        q["question_text"] = q.get("question", "")
+        q["source"] = "AI"
+        q["language"] = paper_language
+        if q["question_type"] != "MCQ":
+            q["options"] = None
+        out.append(q)
+    return out
+
+
+# --- Smart backfill: AI retry -> loosened DB lookup -> typed placeholders ---
+
+
+def _compute_shortfall(questions: list, qdist: dict) -> dict:
+    """Returns {normalized_type: {needed, have, missing, marks, qtype_frontend}} for any type still short."""
+    sf = {}
+    for qtype_frontend, info in qdist.items():
+        normalized = _normalize_qtype(qtype_frontend)
+        needed = int(info.get("count", 0))
+        marks = int(info.get("marks", 1))
+        have = sum(1 for q in questions if q.get("question_type") == normalized)
+        if have < needed:
+            sf[normalized] = {
+                "needed": needed, "have": have,
+                "missing": needed - have, "marks": marks,
+                "qtype_frontend": qtype_frontend,
+            }
+    return sf
+
+
+def _retry_ai_for_missing(shortfall: dict, ctx: dict) -> list:
+    """Targeted AI retry asking only for the missing items."""
+    if not shortfall:
+        return []
+    parts = [
+        f"- exactly {sf['missing']} {sf['qtype_frontend']} question(s), each worth {sf['marks']} marks"
+        for sf in shortfall.values()
+    ]
+    scope_bits = []
+    if ctx.get("topic"):
+        scope_bits.append(f'focused on topic "{ctx["topic"]}"')
+    elif ctx.get("chapters"):
+        scope_bits.append(f"covering chapters: {', '.join(ctx['chapters'])}")
+    scope = " ".join(scope_bits) or "from the general syllabus"
+    retry_prompt = (
+        f"You previously generated questions for a Class {ctx['class_']} {ctx['subject']} "
+        f"({ctx['board']}) paper. I still need MORE questions. Generate ONLY these MISSING questions, "
+        f"{scope}.\n\nMissing:\n" + "\n".join(parts) +
+        f"\n\nLanguage: {ctx['paper_language']}.\n"
+        "Return ONLY a JSON array. Each object: type, question, options (MCQ only — exactly 4), "
+        "marks (integer), difficulty (Easy/Medium/Hard), answer, explanation."
+    )
+    try:
+        text, used = generate_with_fallback(retry_prompt)
+        current_app.logger.info("AI retry-for-missing succeeded via %s", used)
+        raw = _parse_ai_json(text)
+        return _validate_questions(raw, ctx["paper_language"])
+    except Exception as e:
+        current_app.logger.warning("AI retry-for-missing failed: %s", e)
+        return []
+
+
+def _smart_placeholder(qtype_frontend: str, marks: int, subject: str, class_: str,
+                       paper_language: str, scope_hint: str = "") -> dict:
+    """Typed placeholder respecting marks. Scope hint = topic or 'general syllabus'."""
+    qtype_norm = _normalize_qtype(qtype_frontend)
+    scope = scope_hint or f"Class {class_} {subject}"
+    base = {
+        "type": qtype_frontend,
+        "question_type": qtype_norm,
+        "marks": marks,
+        "difficulty": "Medium",
+        "source": "Fallback",
+        "language": paper_language,
+        "options": None,
+        "answer": "See your textbook for the model answer.",
+        "explanation": "Refer to the relevant chapter in your textbook.",
+    }
+    if qtype_norm == "MCQ":
+        qtext = f"Which of the following best describes a key concept from {scope}?"
+        return {**base, "question": qtext, "question_text": qtext,
+                "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "A"}
+    if qtype_norm == "Fill in the Blanks":
+        qtext = f"In {scope}, the concept of ________ plays an important role."
+        return {**base, "question": qtext, "question_text": qtext}
+    if qtype_norm == "Long Answer":
+        qtext = f"Explain in detail an important topic from {scope}, including examples and applications."
+        return {**base, "question": qtext, "question_text": qtext}
+    if qtype_norm == "Matching":
+        qtext = f"Match the following terms from {scope} with their correct definitions."
+        return {**base, "question": qtext, "question_text": qtext}
+    if qtype_norm == "Case Study":
+        qtext = f"Read the following case study from {scope} and answer the questions that follow."
+        return {**base, "question": qtext, "question_text": qtext}
+    qtext = f"Briefly describe an important concept from {scope}."
+    return {**base, "question": qtext, "question_text": qtext}
+
+
+def _backfill_distribution(*, questions: list, qdist: dict, board: str, class_: str,
+                            subject: str, chapters: list, topic: str,
+                            paper_language: str) -> list:
+    """Top up `questions` to meet per-type counts. AI retry -> DB (loosened) -> placeholder."""
+    shortfall = _compute_shortfall(questions, qdist)
+    if not shortfall:
+        return questions
+
+    current_app.logger.info(
+        "Distribution shortfall before backfill: %s",
+        {k: v["missing"] for k, v in shortfall.items()},
+    )
+
+    # 1) Targeted AI retry for the missing items.
+    ctx = {"board": board, "class_": class_, "subject": subject,
+           "topic": topic, "chapters": chapters, "paper_language": paper_language}
+    retry_questions = _retry_ai_for_missing(shortfall, ctx)
+    existing_texts = {q.get("question_text", "").strip().lower() for q in questions}
+    for q in retry_questions:
+        nt = q.get("question_type")
+        if nt not in shortfall or shortfall[nt]["missing"] <= 0:
+            continue
+        text = (q.get("question_text") or "").strip().lower()
+        if not text or text in existing_texts:
+            continue
+        # Force expected marks so totals match what the user asked for.
+        q["marks"] = shortfall[nt]["marks"]
+        questions.append(q)
+        existing_texts.add(text)
+        shortfall[nt]["missing"] -= 1
+    shortfall = {k: v for k, v in shortfall.items() if v["missing"] > 0}
+    if not shortfall:
+        return questions
+
+    # 2) DB lookup with progressive filter loosening.
+    topic_present = bool(topic and topic.strip())
+    chapter_id_list = []
+    if chapters:
+        chapter_objects = Chapter.query.filter(Chapter.title_en.in_(chapters)).all()
+        chapter_id_list = [c.chapter_id for c in chapter_objects]
+
+    def _build_base_query(ntype, marks=None, language=None):
+        f = {"question_type": ntype}
+        if marks is not None:
+            f["marks"] = marks
+        if language is not None:
+            f["language"] = language
+        q = Question.query.filter_by(**f)
+        if chapter_id_list:
+            return q.filter(Question.chapter_id.in_(chapter_id_list))
+        if topic_present:
+            return q.filter(Question.question_text.contains(topic))
+        q = q.join(Chapter).join(Subject)
+        if subject:
+            q = q.filter(Subject.name_en == subject)
+        if class_:
+            q = q.join(Class).filter(Class.class_number == class_)
+        return q
+
+    for ntype, sf in list(shortfall.items()):
+        if sf["missing"] <= 0:
+            continue
+        seen_ids = set()
+        filter_variants = [
+            dict(marks=sf["marks"], language=paper_language),  # exact
+            dict(language=paper_language),                     # any marks, same lang
+            dict(marks=sf["marks"]),                           # exact marks, any lang
+            dict(),                                            # any marks, any lang
+        ]
+        for variant in filter_variants:
+            if sf["missing"] <= 0:
+                break
+            try:
+                rows = (
+                    _build_base_query(ntype, **variant)
+                    .order_by(func.rand())
+                    .limit(sf["missing"] * 3)
+                    .all()
+                )
+            except Exception as e:
+                current_app.logger.warning("DB backfill query failed (%s, %s): %s", ntype, variant, e)
+                rows = []
+            for r in rows:
+                if sf["missing"] <= 0:
+                    break
+                if r.id in seen_ids:
+                    continue
+                seen_ids.add(r.id)
+                text = (r.question_text or "").strip().lower()
+                if not text or text in existing_texts:
+                    continue
+                q_dict = r.as_dict()
+                q_dict["source"] = "Database"
+                q_dict["language"] = r.language or paper_language
+                q_dict["question_type"] = ntype
+                q_dict["marks"] = sf["marks"]  # honor user's requested marks
+                q_dict["question_text"] = r.question_text
+                questions.append(q_dict)
+                existing_texts.add(text)
+                sf["missing"] -= 1
+        current_app.logger.info("After DB backfill type=%s missing=%d", ntype, sf["missing"])
+
+    shortfall = {k: v for k, v in shortfall.items() if v["missing"] > 0}
+    if not shortfall:
+        return questions
+
+    # 3) Typed placeholders for whatever is still missing.
+    scope_hint = ""
+    if topic_present:
+        scope_hint = topic
+    elif chapters:
+        scope_hint = f"the chapter '{chapters[0]}' of Class {class_} {subject}"
+    for ntype, sf in shortfall.items():
+        for _ in range(sf["missing"]):
+            questions.append(
+                _smart_placeholder(sf["qtype_frontend"], sf["marks"], subject,
+                                   class_, paper_language, scope_hint)
+            )
+        current_app.logger.info("Smart placeholders added: type=%s count=%d", ntype, sf["missing"])
+
+    return questions
+
+
+@main.route("/api/generate", methods=["POST"])
+@limiter.limit("10 per hour")
+def generate_paper():
+    raw_payload = request.get_json(silent=True) or {}
+    try:
+        req = GenerateRequest(**raw_payload)
+    except ValidationError as ve:
+        return jsonify({"error": "Invalid request", "details": ve.errors()}), 400
+
+    subject = req.subject
+    class_ = req.class_
+    board = req.schoolBoard
+    school = req.schoolName or ""
+    qdist = {k: v.model_dump() for k, v in req.questionDistribution.items()}
+    ddist = req.difficultyDistribution
+    exam_name = req.examName or ""
+    paper_language = req.paperLanguage
+    topic = req.topic or ""
+    chapters = req.chapters
+    questions: list = []
+
+    visitor = get_or_create_visitor()
+    topic_present = bool(topic and topic.strip())
+    current_app.logger.info(
+        "generate_paper subject=%s class=%s board=%s topic_present=%s providers=%s",
+        subject, class_, board, topic_present,
+        [p.name for p in available_providers()],
+    )
+
+    qdist_prompt_str = _build_qdist_string(qdist)
+    language_instruction = build_language_instruction(paper_language, subject)
+
+    if topic_present:
+        prompt = build_topic_prompt(
+            board=board, school=school, class_=class_, subject=subject,
+            topic=topic, qdist_str=qdist_prompt_str, ddist=ddist,
+            language_instruction=language_instruction, paper_language=paper_language,
+        )
+    else:
+        prompt = build_class_prompt(
+            board=board, school=school, class_=class_, subject=subject,
+            chapters=chapters, qdist_str=qdist_prompt_str, ddist=ddist,
+            language_instruction=language_instruction, paper_language=paper_language,
+        )
 
     try:
-        # Create different prompts based on generation mode
-        # More robust topic detection
-        topic_present = bool(topic and topic.strip())
-        current_app.logger.info(f"Using topic-based generation: {topic_present}")
-        
-        if topic_present:
-            # Topic-based generation - improved prompt
-            current_app.logger.info("Generating topic-based prompt")
-            prompt = f"""
-You are an experienced {board} school teacher creating a question paper. 
-Your task is to create a comprehensive question paper focused EXCLUSIVELY on the topic: "{topic}".
-
-School: {school}
-Class: {class_}
-Subject: {subject}
-
-{language_instruction}
-
-CRITICAL INSTRUCTIONS:
-1. Generate EXACTLY the number and types of questions specified below
-2. ALL questions MUST be directly related to the topic "{topic}"
-3. Do NOT include any questions unrelated to this topic
-4. Follow the difficulty distribution as closely as possible
-5. ALL content MUST be in {paper_language.capitalize()} language
-
-Question Distribution Requirements:
-{qdist_prompt_str}
-
-Difficulty Distribution Target:
-{ddist}
-
-OUTPUT FORMAT REQUIREMENTS:
-- Return ONLY a valid JSON array of question objects
-- Do NOT include any other text, explanations, or markdown formatting
-- Each question object MUST have these exact keys:
-  - "type" (e.g., "MCQ", "Short Answer", "Long Answer", etc.)
-  - "question" (the question text)
-  - "options" (ONLY for "MCQ" type: exactly 4 options as a JSON array of strings)
-  - "marks" (integer)
-  - "difficulty" ("Easy", "Medium", or "Hard")
-  - "answer" (correct answer - for MCQ provide the letter like "A" or "B")
-  - "explanation" (brief explanation)
-
-Example MCQ format:
-{{
-  "type": "MCQ",
-  "question": "What is the capital of France?",
-  "options": ["London", "Berlin", "Paris", "Madrid"],
-  "marks": 1,
-  "difficulty": "Easy",
-  "answer": "C",
-  "explanation": "Paris is the capital of France."
-}}
-
-Begin generating the question paper now:
-"""
-        else:
-            # Class and chapters-based generation
-            current_app.logger.info("Generating class/chapter-based prompt")
-            chapters_str = ""
-            if chapters:
-                chapters_str = f"Focus on these chapters: {', '.join(chapters)}."
-            
-            prompt = f"""
-You are an experienced {board} school teacher creating a question paper. 
-Your task is to create a comprehensive question paper for Class {class_}, Subject: {subject}.
-
-School: {school}
-{chapters_str}
-
-{language_instruction}
-
-CRITICAL INSTRUCTIONS:
-1. Generate EXACTLY the number and types of questions specified below
-2. ALL questions MUST be appropriate for Class {class_} {subject}
-3. Follow the difficulty distribution as closely as possible
-4. ALL content MUST be in {paper_language.capitalize()} language
-
-Question Distribution Requirements:
-{qdist_prompt_str}
-
-Difficulty Distribution Target:
-{ddist}
-
-OUTPUT FORMAT REQUIREMENTS:
-- Return ONLY a valid JSON array of question objects
-- Do NOT include any other text, explanations, or markdown formatting
-- Each question object MUST have these exact keys:
-  - "type" (e.g., "MCQ", "Short Answer", "Long Answer", etc.)
-  - "question" (the question text)
-  - "options" (ONLY for "MCQ" type: exactly 4 options as a JSON array of strings)
-  - "marks" (integer)
-  - "difficulty" ("Easy", "Medium", or "Hard")
-  - "answer" (correct answer - for MCQ provide the letter like "A" or "B")
-  - "explanation" (brief explanation)
-
-Example MCQ format:
-{{
-  "type": "MCQ",
-  "question": "What is the capital of France?",
-  "options": ["London", "Berlin", "Paris", "Madrid"],
-  "marks": 1,
-  "difficulty": "Easy",
-  "answer": "C",
-  "explanation": "Paris is the capital of France."
-}}
-
-Begin generating the question paper now:
-"""
-            
-        # Log the prompt to see what's being sent to the AI
-        current_app.logger.info(f"Sending prompt to AI: {prompt}")
-        
-        # Use the already configured genai from __init__.py
-        # Using getattr to avoid linter issues
-        try:
-            current_app.logger.info("Attempting to create GenerativeModel with 'models/gemini-flash-latest'")
-            model = genai.GenerativeModel("models/gemini-flash-latest")  # Using the latest flash model
-            current_app.logger.info("Model created successfully, sending prompt")
-            response = model.generate_content(prompt)
-            raw_text = response.text.strip()
-            current_app.logger.info("Response received successfully")
-        except Exception as model_error:
-            current_app.logger.error(f"AI model error with models/gemini-flash-latest: {model_error}")
-            # Try a fallback model
-            try:
-                current_app.logger.info("Attempting fallback with 'models/gemini-pro-latest'")
-                model = genai.GenerativeModel("models/gemini-pro-latest")  # Fallback to latest pro model
-                response = model.generate_content(prompt)
-                raw_text = response.text.strip()
-                current_app.logger.info("Fallback response received successfully")
-            except Exception as fallback_error:
-                current_app.logger.error(f"AI model error with fallback models/gemini-pro-latest: {fallback_error}")
-                # Try another fallback model
-                try:
-                    current_app.logger.info("Attempting fallback with 'models/gemini-2.0-flash'")
-                    model = genai.GenerativeModel("models/gemini-2.0-flash")  # Another fallback option
-                    response = model.generate_content(prompt)
-                    raw_text = response.text.strip()
-                    current_app.logger.info("Second fallback response received successfully")
-                except Exception as second_fallback_error:
-                    current_app.logger.error(f"AI model error with second fallback models/gemini-2.0-flash: {second_fallback_error}")
-                    raise second_fallback_error
-        
-        # Log the AI response
-        current_app.logger.info(f"AI response: {raw_text}")
-
-        try:
-            questions = json.loads(raw_text)
-        except json.JSONDecodeError:
-            json_match = re.search(r"```json\s*(.*?)```", raw_text, re.DOTALL)
-            if json_match:
-                questions = json.loads(json_match.group(1))
-            else:
-                raise ValueError("AI returned invalid JSON.")
-
-        for q in questions:
-            q["question_type"] = _normalize_qtype(q.get("type"))
+        raw_text, provider_used = generate_with_fallback(prompt)
+        current_app.logger.info("AI generation succeeded via provider=%s", provider_used)
+        ai_questions_raw = _parse_ai_json(raw_text)
+        questions = _validate_questions(ai_questions_raw, paper_language)
         
         # Track used question IDs to prevent duplicates
         used_question_hashes = set()
@@ -470,102 +603,11 @@ Begin generating the question paper now:
         db.session.rollback()
         questions = []
 
-    # --- Fallback: fill missing questions from DB ---
-    total_needed = sum(int(info['count']) for info in qdist.values())
-    # Create a set of existing question texts to avoid duplicates
-    existing_question_texts = {q.get("question_text", "").strip().lower() for q in questions}
-    
-    if len(questions) < total_needed:
-        for qtype_frontend, info in qdist.items():
-            count_needed = int(info['count'])
-            marks = int(info['marks'])
-            
-            # --- FIX #4: USE NORMALIZED TYPE FOR COUNTING AND QUERYING ---
-            normalized_type = _normalize_qtype(qtype_frontend)
-            
-            # Count how many questions of this type we already have
-            picked_count = sum(1 for q in questions if q.get("question_type") == normalized_type)
-            missing_for_type = max(0, count_needed - picked_count)
-
-            if missing_for_type > 0:
-                # Create the base query with exact criteria ONLY
-                query = Question.query.filter_by(
-                    question_type=normalized_type, 
-                    marks=marks, 
-                    language=paper_language
-                )
-                
-
-            # NEW: Convert chapter names from the form into a list of chapter IDs for the query
-            chapter_id_list = []
-            if chapters:
-                chapter_objects = Chapter.query.filter(Chapter.title_en.in_(chapters)).all()
-                chapter_id_list = [c.chapter_id for c in chapter_objects]
-
-            # NEW: Correctly filter using JOINs or chapter IDs
-            if chapter_id_list:
-                # If chapters are provided, filter by their IDs (this is the most precise method)
-                query = query.filter(Question.chapter_id.in_(chapter_id_list))
-            elif topic_present:
-                # Fallback for topic-based search
-                query = query.filter(Question.question_text.contains(topic))
-            else:
-                # Fallback for general class/subject search (uses JOINs)
-                query = query.join(Chapter).join(Subject)
-                if subject:
-                    query = query.filter(Subject.name_en == subject)
-                if class_:
-                    query = query.join(Class).filter(Class.class_number == class_)
-                
-                # Get more questions than needed to filter duplicates
-                db_questions = (
-                    query
-                    .order_by(func.rand())
-                    .limit(missing_for_type * 2)  # Get extra questions to filter duplicates
-                    .all()
-                )
-                
-                # Add questions while avoiding duplicates
-                added_count = 0
-                for q in db_questions:
-                    if added_count >= missing_for_type:
-                        break
-                        
-                    question_text = q.question_text.strip().lower()
-                    if question_text not in existing_question_texts:
-                        q_dict = q.as_dict()
-                        q_dict['source'] = "Database"
-                        # Ensure language is preserved when fetching from database
-                        q_dict['language'] = q.language
-                        questions.append(q_dict)
-                        existing_question_texts.add(question_text)
-                        added_count += 1
-                        
-                # Log how many questions we were able to add
-                current_app.logger.info(f"Added {added_count} questions of type {normalized_type} from database. Total questions now: {len(questions)}")
-        
-        # Final fallback - if we still don't have enough questions, generate some basic ones
-        if len(questions) < total_needed:
-            current_app.logger.info(f"Still need {total_needed - len(questions)} questions, generating basic fallback questions")
-            missing_count = total_needed - len(questions)
-            
-            # Generate some basic questions as a last resort
-            for i in range(missing_count):
-                basic_question = {
-                    "type": "Short",
-                    "question_type": "Short Answer",
-                    "question": f"Explain the basic concepts related to {subject} for Class {class_}.",
-                    "marks": 3,
-                    "difficulty": "Medium",
-                    "answer": "Answer would depend on the specific topic.",
-                    "explanation": "This is a fallback question generated due to limited database content.",
-                    "source": "Fallback",
-                    "language": paper_language,
-                    "options": None
-                }
-                questions.append(basic_question)
-                
-            current_app.logger.info(f"Generated {missing_count} fallback questions. Total questions now: {len(questions)}")
+    # --- Smart backfill: AI retry -> DB (loosened) -> typed placeholders ---
+    questions = _backfill_distribution(
+        questions=questions, qdist=qdist, board=board, class_=class_,
+        subject=subject, chapters=chapters, topic=topic, paper_language=paper_language,
+    )
     paper_id = str(uuid.uuid4())[:8]
     pdf_filename = f"paper_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     word_filename = f"{paper_id}.docx"
@@ -805,8 +847,458 @@ Begin generating the question paper now:
         "summary": summary,
         "pdf_url": f"/static/papers/{pdf_filename}",
         "word_url": f"/api/download/word/{paper_id}",
-        "answer_key_url": f"/api/download/answer_key/{paper_id}"
+        "answer_key_url": f"/api/download/answer_key/{paper_id}",
     })
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@main.route("/api/generate/stream", methods=["POST"])
+@limiter.limit("10 per hour")
+def generate_paper_stream():
+    """Server-Sent Events endpoint: stream questions as the LLM produces them.
+
+    Emits events:
+      - phase   { phase: "connecting" | "generating" | "rendering" | "done" }
+      - chunk   { text: "...partial llm output..." }
+      - question{ index, question, provider }      (each parsed question)
+      - error   { message }
+      - done    { paper_id, pdf_url, word_url, answer_key_url, summary }
+    """
+    raw_payload = request.get_json(silent=True) or {}
+    try:
+        req = GenerateRequest(**raw_payload)
+    except ValidationError as ve:
+        return jsonify({"error": "Invalid request", "details": ve.errors()}), 400
+
+    if not available_providers():
+        return jsonify({"error": "No AI provider configured."}), 503
+
+    visitor = get_or_create_visitor()
+    visitor_id = visitor.visitor_id
+
+    subject = req.subject
+    class_ = req.class_
+    board = req.schoolBoard
+    school = req.schoolName or ""
+    qdist = {k: v.model_dump() for k, v in req.questionDistribution.items()}
+    ddist = req.difficultyDistribution
+    exam_name = req.examName or ""
+    paper_language = req.paperLanguage
+    topic = req.topic or ""
+    chapters = req.chapters
+    topic_present = bool(topic and topic.strip())
+
+    qdist_prompt_str = _build_qdist_string(qdist)
+    language_instruction = build_language_instruction(paper_language, subject)
+    if topic_present:
+        prompt = build_topic_prompt(
+            board=board, school=school, class_=class_, subject=subject,
+            topic=topic, qdist_str=qdist_prompt_str, ddist=ddist,
+            language_instruction=language_instruction, paper_language=paper_language,
+        )
+    else:
+        prompt = build_class_prompt(
+            board=board, school=school, class_=class_, subject=subject,
+            chapters=chapters, qdist_str=qdist_prompt_str, ddist=ddist,
+            language_instruction=language_instruction, paper_language=paper_language,
+        )
+
+    app_obj = current_app._get_current_object()
+
+    def generator():
+        with app_obj.app_context():
+            try:
+                yield _sse("phase", {"phase": "connecting"})
+                buffer = ""
+                provider_seen = None
+                yielded_count = 0
+                yield _sse("phase", {"phase": "generating"})
+                try:
+                    for chunk, provider_name in stream_with_fallback(prompt):
+                        provider_seen = provider_name
+                        buffer += chunk
+                        yield _sse("chunk", {"text": chunk, "provider": provider_name})
+                        # Best-effort progressive parse of completed top-level JSON objects.
+                        new_count, parsed_qs = _extract_complete_questions(buffer, yielded_count)
+                        for q in parsed_qs:
+                            yield _sse("question", {"index": yielded_count, "question": q, "provider": provider_name})
+                            yielded_count += 1
+                        yielded_count = new_count
+                except ProviderError as pe:
+                    yield _sse("error", {"message": f"All providers failed: {pe}"})
+                    return
+
+                yield _sse("phase", {"phase": "rendering"})
+                try:
+                    ai_questions_raw = _parse_ai_json(buffer)
+                    questions = _validate_questions(ai_questions_raw, paper_language)
+                except Exception as parse_err:
+                    current_app.logger.warning("Streaming parse failed, will rely on backfill: %s", parse_err)
+                    questions = []
+
+                # Top up to meet the requested distribution.
+                questions = _backfill_distribution(
+                    questions=questions, qdist=qdist, board=board, class_=class_,
+                    subject=subject, chapters=chapters, topic=topic, paper_language=paper_language,
+                )
+
+                if not questions:
+                    yield _sse("error", {"message": "Could not generate any questions."})
+                    return
+
+                paper_id, urls, summary = _persist_and_render_paper(
+                    questions=questions,
+                    board=board, class_=class_, subject=subject,
+                    school=school, exam_name=exam_name,
+                    paper_language=paper_language, visitor_id=visitor_id,
+                )
+                questions_payload = [{
+                    "question_text": q.get("question_text") or q.get("question"),
+                    "question": q.get("question_text") or q.get("question"),
+                    "marks": q.get("marks"),
+                    "difficulty": q.get("difficulty"),
+                    "type": q.get("type") or q.get("question_type"),
+                    "question_type": q.get("question_type"),
+                    "options": q.get("options"),
+                    "answer": q.get("answer"),
+                } for q in questions]
+                yield _sse("done", {
+                    "paper_id": paper_id,
+                    "summary": summary,
+                    "provider": provider_seen,
+                    "questions": questions_payload,
+                    **urls,
+                })
+            except Exception as e:
+                current_app.logger.exception("stream generator failed")
+                yield _sse("error", {"message": str(e)})
+
+    return Response(
+        stream_with_context(generator()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+_QUESTION_OBJ_RE = re.compile(r"\{[^{}]*?\"question\"\s*:\s*\"[^\"]*\"[^{}]*?\}", re.DOTALL)
+
+
+def _extract_complete_questions(buffer: str, already_yielded: int):
+    """Best-effort extractor for completed top-level JSON objects in a streaming buffer.
+
+    Returns (new_yielded_count, list_of_newly_parsed_dicts).
+    Very forgiving — failures just mean we wait for more data.
+    """
+    matches = _QUESTION_OBJ_RE.findall(buffer)
+    out = []
+    for raw in matches[already_yielded:]:
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict) and "question" in obj:
+                out.append(obj)
+        except Exception:
+            continue
+    return already_yielded + len(out), out
+
+
+_SECTION_TITLES = {
+    "english": {
+        "Multiple Choice":    "Section A — Multiple Choice Questions",
+        "Fill in the Blanks": "Section B — Fill in the Blanks",
+        "Short Answer":       "Section C — Short Answer Questions",
+        "Long Answer":        "Section D — Long Answer Questions",
+        "Matching":           "Section E — Match the Following",
+        "Case Study":         "Section F — Case Study",
+    },
+    "hindi": {
+        "Multiple Choice":    "खंड A — बहुविकल्पीय प्रश्न",
+        "Fill in the Blanks": "खंड B — रिक्त स्थान भरें",
+        "Short Answer":       "खंड C — लघु उत्तरीय प्रश्न",
+        "Long Answer":        "खंड D — दीर्घ उत्तरीय प्रश्न",
+        "Matching":           "खंड E — मिलान करें",
+        "Case Study":         "खंड F — केस अध्ययन",
+    },
+}
+
+_PDF_LABELS = {
+    "english": {
+        "q_prefix":     "Q",
+        "marks_one":    "mark",
+        "marks_many":   "marks",
+        "date":         "Date",
+        "class":        "Class",
+        "answer_key":   "Answer Key",
+        "answer":       "Answer",
+        "explanation":  "Explanation",
+    },
+    "hindi": {
+        "q_prefix":     "प्र.",
+        "marks_one":    "अंक",
+        "marks_many":   "अंक",
+        "date":         "दिनांक",
+        "class":        "कक्षा",
+        "answer_key":   "उत्तर कुंजी",
+        "answer":       "उत्तर",
+        "explanation":  "व्याख्या",
+    },
+}
+
+
+def _section_titles_for(paper_language: str) -> dict:
+    return _SECTION_TITLES.get((paper_language or "english").lower(), _SECTION_TITLES["english"])
+
+
+def _pdf_labels_for(paper_language: str) -> dict:
+    return _PDF_LABELS.get((paper_language or "english").lower(), _PDF_LABELS["english"])
+
+
+def _persist_and_render_paper(
+    *, questions, board, class_, subject, school, exam_name, paper_language, visitor_id,
+):
+    """Persist paper to DB and render PDF/JSON/DOCX-deferred. Returns (paper_id, urls, summary)."""
+    paper_id = str(uuid.uuid4())[:8]
+    pdf_filename = f"paper_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    word_filename = f"{paper_id}.docx"
+    answer_key_filename = f"answer_key_{paper_id}.pdf"
+
+    summary = {
+        "total_questions": len(questions),
+        "total_marks": sum(int(q.get("marks", 0)) for q in questions),
+    }
+
+    paper_entry = Paper()
+    paper_entry.paper_id = paper_id
+    paper_entry.exam_name = exam_name
+    paper_entry.school_name = school
+    paper_entry.board = board
+    paper_entry.class_ = class_
+    paper_entry.subject = subject
+    paper_entry.total_questions = summary["total_questions"]
+    paper_entry.total_marks = summary["total_marks"]
+    paper_entry.pdf_path = f"/static/papers/{pdf_filename}"
+    paper_entry.word_path = f"/static/papers/{word_filename}"
+    paper_entry.answer_key_path = f"/static/papers/{answer_key_filename}"
+    paper_entry.visitor_id = visitor_id
+    db.session.add(paper_entry)
+    db.session.commit()
+
+    for q in questions:
+        pq = PaperQuestion()
+        pq.paper_id = paper_id
+        pq.question_id = q.get("id")
+        pq.question_text = q.get("question_text") or q.get("question")
+        pq.type = q.get("question_type")
+        pq.difficulty = q.get("difficulty")
+        pq.marks = q.get("marks")
+        pq.options = q.get("options") if q.get("options") else None
+        pq.answer = q.get("answer", "Not provided")
+        db.session.add(pq)
+    db.session.commit()
+
+    papers_dir = os.path.join(current_app.root_path, "static", "papers")
+    os.makedirs(papers_dir, exist_ok=True)
+    json_path = os.path.join(papers_dir, f"{paper_id}.json")
+
+    type_order = ["MCQ", "Multiple Choice", "Fill in the Blanks", "Fill", "Short Answer", "Short",
+                  "Long Answer", "Long", "Matching", "Match", "Match the Following", "Case Study", "Case"]
+    def get_type_order(q):
+        t = (q.get("type") or q.get("question_type") or "").strip()
+        try:
+            return type_order.index(t)
+        except ValueError:
+            return len(type_order)
+
+    questions_sorted = sorted(questions, key=get_type_order)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "paper_id": paper_id, "examName": exam_name, "schoolName": school,
+            "schoolBoard": board, "class": class_, "subject": subject,
+            "questions": questions_sorted, "summary": summary,
+        }, f, indent=2, ensure_ascii=False)
+
+    # Render PDF
+    fonts_dir = os.path.join(current_app.root_path, "fonts")
+    font_url_regular = pathlib.Path(os.path.join(fonts_dir, "NotoSansDevanagari-Regular.ttf")).as_uri()
+    bold_path = os.path.join(fonts_dir, "NotoSansDevanagari-Bold.ttf")
+    font_url_bold = pathlib.Path(bold_path).as_uri() if os.path.exists(bold_path) else font_url_regular
+    sections = {"Multiple Choice": [], "Fill in the Blanks": [], "Short Answer": [],
+                "Long Answer": [], "Matching": [], "Case Study": []}
+    section_titles = _section_titles_for(paper_language)
+    labels = _pdf_labels_for(paper_language)
+    for q in questions_sorted:
+        qt = _normalize_qtype(q.get("question_type", ""))
+        if qt == "MCQ":
+            qt = "Multiple Choice"
+        if qt in sections:
+            sections[qt].append(q)
+
+    env = current_app.jinja_env
+    env.filters["math_render"] = render_simple_math
+    rendered_html = render_template_string(
+        _PAPER_HTML_TEMPLATE,
+        font_url_regular=font_url_regular,
+        font_url_bold=font_url_bold,
+        school=school,
+        exam_name=exam_name or f"{board} Board Examination",
+        class_=class_, subject=subject,
+        date=datetime.now().strftime("%d-%m-%Y"),
+        sections=sections, section_titles=section_titles, labels=labels,
+        lang_attr="hi" if paper_language == "hindi" else "en",
+    )
+    pdf_path = os.path.join(papers_dir, pdf_filename)
+    HTML(string=rendered_html).write_pdf(pdf_path)
+
+    urls = {
+        "pdf_url": f"/static/papers/{pdf_filename}",
+        "word_url": f"/api/download/word/{paper_id}",
+        "answer_key_url": f"/api/download/answer_key/{paper_id}",
+    }
+    return paper_id, urls, summary
+
+
+_PAPER_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="{{ lang_attr }}">
+<head>
+<meta charset="UTF-8">
+<style>
+@page { size: A4; margin: 22mm 18mm; }
+
+/* Register BOTH weights so bold runs don't fall back to a non-Devanagari face. */
+@font-face {
+  font-family: 'NotoDev';
+  src: url('{{ font_url_regular }}') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'NotoDev';
+  src: url('{{ font_url_bold }}') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+html, body {
+  font-family: 'NotoDev', 'Noto Sans Devanagari', sans-serif;
+  font-size: 12pt;
+  line-height: 1.55;          /* Devanagari needs extra vertical room */
+  background: #fff;
+  color: #1a1a1a;
+}
+
+.paper-header { text-align: center; margin-bottom: 14px; border-bottom: 2px solid #222; padding-bottom: 8px; }
+.paper-header h1 { font-size: 20pt; margin: 0; font-weight: 700; }
+.paper-header h2 { font-size: 14pt; margin: 4px 0; font-weight: 400; }
+.paper-header h3 { font-size: 12pt; margin: 4px 0; font-weight: 400; color: #444; }
+
+.details { display: flex; justify-content: space-between; margin-bottom: 14px; font-size: 11pt; color: #333; }
+
+section { margin-bottom: 18px; page-break-inside: auto; }
+h4.section-title {
+  font-size: 12pt;
+  font-weight: 700;
+  border-bottom: 1px solid #bbb;
+  padding: 4px 0;
+  margin: 14px 0 10px;
+}
+
+ol.question-list { list-style-type: none; padding-left: 0; margin-top: 0; }
+
+li.question {
+  margin-bottom: 12px;
+  page-break-inside: avoid;
+}
+
+.question-text {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+.question-text .q-body { flex: 1; }
+.question-text .q-body b { font-weight: 700; margin-right: 4px; }
+.question-text .marks {
+  font-weight: 700;
+  white-space: nowrap;
+  padding-left: 12px;
+  font-size: 10.5pt;
+  color: #555;
+}
+
+ol.options {
+  list-style-type: lower-alpha;
+  padding-left: 28px;
+  margin: 6px 0 0;
+}
+ol.options li {
+  margin-bottom: 2px;
+  padding-left: 4px;
+}
+</style>
+</head>
+<body>
+<div class="paper-container">
+  <div class="paper-header">
+    <h1>{{ school }}</h1>
+    <h2>{{ exam_name }}</h2>
+    <h3>{{ labels.class }} {{ class_ }} &middot; {{ subject }}</h3>
+  </div>
+  <div class="details">
+    <span>{{ labels.date }}: {{ date }}</span>
+  </div>
+  {% set q_num = namespace(value=1) %}
+  {% for sec_type, q_list in sections.items() %}
+    {% if q_list %}
+    <section>
+      <h4 class="section-title">{{ section_titles[sec_type] }}</h4>
+      <ol class="question-list">
+        {% for q in q_list %}
+        <li class="question">
+          <div class="question-text">
+            <span class="q-body"><b>{{ labels.q_prefix }}{{ q_num.value }}.</b> {{ q.question_text | math_render | safe }}</span>
+            <span class="marks">({{ q.marks }} {{ labels.marks_one if q.marks == 1 else labels.marks_many }})</span>
+          </div>
+          {% if q.question_type == 'MCQ' and q.options %}
+          <ol class="options">
+            {% for opt in q.options %}
+            <li>{{ opt | math_render | safe }}</li>
+            {% endfor %}
+          </ol>
+          {% endif %}
+        </li>
+        {% set q_num.value = q_num.value + 1 %}
+        {% endfor %}
+      </ol>
+    </section>
+    {% endif %}
+  {% endfor %}
+</div>
+</body>
+</html>
+"""
+
+
+def _set_run_font(run, font_name: str = "Nirmala UI", size_pt: float = 11.0, bold: bool = False):
+    """Apply a Devanagari-capable font to a python-docx run (both Latin and East-Asian/Indic ranges)."""
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+    run.font.name = font_name
+    run.font.size = Pt(size_pt)
+    run.bold = bold
+    rPr = run._r.get_or_add_rPr()
+    rFonts = rPr.find(qn("w:rFonts"))
+    if rFonts is None:
+        from docx.oxml import OxmlElement
+        rFonts = OxmlElement("w:rFonts")
+        rPr.append(rFonts)
+    for attr in ("ascii", "hAnsi", "cs", "eastAsia"):
+        rFonts.set(qn(f"w:{attr}"), font_name)
 
 
 @main.route("/api/download/word/<paper_id>", methods=["GET"])
@@ -816,18 +1308,73 @@ def download_word(paper_id):
         return jsonify({"error": "Paper not found"}), 404
     with open(json_path, "r", encoding="utf-8") as f:
         paper = json.load(f)
+
+    is_hindi = any((q.get("language") or "").lower() == "hindi" for q in paper.get("questions", []))
+    paper_language = "hindi" if is_hindi else "english"
+    font_name = "Nirmala UI" if is_hindi else "Calibri"
+    labels = _pdf_labels_for(paper_language)
+
     doc = Document()
-    doc.add_heading(paper.get("examName", "Question Paper"), 0)
-    doc.add_paragraph(f"School: {paper.get('schoolName')}")
-    doc.add_paragraph(f"Board: {paper.get('schoolBoard')}")
-    doc.add_paragraph(f"Class: {paper.get('class')}  Subject: {paper.get('subject')}")
-    doc.add_heading("Questions", level=1)
-    for i, q in enumerate(paper.get("questions", []), 1):
-        doc.add_paragraph(f"Q{i}. {q['question_text']} ({q['marks']} marks) [{q['difficulty']}]")
-        if q.get("question_type") in ["MCQ", "Multiple Choice"]:
-            options = q.get("options", [])
-            for idx, opt in enumerate(options, start=1):
-                doc.add_paragraph(f"   ({chr(96+idx)}) {opt}", style="List Bullet")
+    style = doc.styles["Normal"]
+    style.font.name = font_name
+    from docx.oxml.ns import qn
+    style.element.rPr.rFonts.set(qn("w:cs"), font_name)
+    style.element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+
+    title = doc.add_paragraph()
+    title_run = title.add_run(paper.get("examName") or ("प्रश्न पत्र" if is_hindi else "Question Paper"))
+    _set_run_font(title_run, font_name, 18, bold=True)
+    title.alignment = 1
+
+    meta = doc.add_paragraph()
+    _set_run_font(meta.add_run(f"{paper.get('schoolName', '')}"), font_name, 12, bold=True)
+    meta.alignment = 1
+    sub = doc.add_paragraph()
+    sub_text = (f"{labels['class']} {paper.get('class', '')}  ·  {paper.get('subject', '')}  ·  "
+                f"{'बोर्ड' if is_hindi else 'Board'}: {paper.get('schoolBoard', '')}")
+    _set_run_font(sub.add_run(sub_text), font_name, 11)
+    sub.alignment = 1
+
+    doc.add_paragraph()
+
+    # Group questions by section so they appear under translated section headings.
+    section_order = ["MCQ", "Multiple Choice", "Fill in the Blanks",
+                     "Short Answer", "Long Answer", "Matching", "Case Study"]
+    section_key = {
+        "MCQ": "Multiple Choice", "Multiple Choice": "Multiple Choice",
+        "Fill in the Blanks": "Fill in the Blanks",
+        "Short Answer": "Short Answer", "Long Answer": "Long Answer",
+        "Matching": "Matching", "Case Study": "Case Study",
+    }
+    section_titles = _section_titles_for(paper_language)
+    grouped = {k: [] for k in section_titles.keys()}
+    for q in paper.get("questions", []):
+        sk = section_key.get(_normalize_qtype(q.get("question_type", "")))
+        if sk:
+            grouped[sk].append(q)
+
+    q_counter = 1
+    for sec_key, q_list in grouped.items():
+        if not q_list:
+            continue
+        h = doc.add_paragraph()
+        _set_run_font(h.add_run(section_titles[sec_key]), font_name, 13, bold=True)
+
+        for q in q_list:
+            p = doc.add_paragraph()
+            _set_run_font(p.add_run(f"{labels['q_prefix']}{q_counter}. "), font_name, 11, bold=True)
+            _set_run_font(p.add_run(q.get("question_text") or q.get("question") or ""), font_name, 11)
+            marks = int(q.get("marks", 0) or 0)
+            marks_label = labels["marks_one"] if marks == 1 else labels["marks_many"]
+            _set_run_font(p.add_run(f"   ({marks} {marks_label})"), font_name, 10, bold=True)
+
+            if _normalize_qtype(q.get("question_type", "")) == "MCQ":
+                for idx, opt in enumerate(q.get("options") or [], start=1):
+                    op = doc.add_paragraph()
+                    _set_run_font(op.add_run(f"   ({chr(96+idx)}) "), font_name, 11, bold=True)
+                    _set_run_font(op.add_run(str(opt)), font_name, 11)
+            q_counter += 1
+
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -835,8 +1382,70 @@ def download_word(paper_id):
         buf,
         as_attachment=True,
         download_name=f"paper_{paper_id}.docx",
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+_ANSWER_KEY_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="{{ lang_attr }}">
+<head>
+<meta charset="UTF-8">
+<style>
+@page { size: A4; margin: 22mm 18mm; }
+@font-face {
+  font-family: 'NotoDev';
+  src: url('{{ font_url_regular }}') format('truetype');
+  font-weight: 400;
+}
+@font-face {
+  font-family: 'NotoDev';
+  src: url('{{ font_url_bold }}') format('truetype');
+  font-weight: 700;
+}
+html, body {
+  font-family: 'NotoDev', 'Noto Sans Devanagari', sans-serif;
+  font-size: 11.5pt;
+  line-height: 1.55;
+  color: #1a1a1a;
+}
+.header { text-align: center; border-bottom: 2px solid #222; padding-bottom: 8px; margin-bottom: 14px; }
+.header h1 { font-size: 18pt; margin: 0; font-weight: 700; }
+.header h2 { font-size: 12pt; margin: 4px 0; font-weight: 400; color: #444; }
+.meta { font-size: 10.5pt; color: #333; margin-bottom: 14px; }
+.entry { margin-bottom: 14px; page-break-inside: avoid; }
+.entry .q { font-weight: 700; }
+.entry .a { margin-top: 4px; padding-left: 12px; }
+.entry .a .label { font-weight: 700; color: #0a6e54; }
+.entry .e { margin-top: 4px; padding-left: 12px; color: #444; font-size: 10.5pt; }
+.entry .e .label { font-weight: 700; }
+hr.sep { border: 0; border-top: 1px dashed #ccc; margin: 10px 0; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>{{ labels.answer_key }} — {{ exam_name }}</h1>
+    <h2>{{ school }}</h2>
+  </div>
+  <div class="meta">{{ labels.class }} {{ class_ }} &middot; {{ subject }} &middot; {{ labels.date }}: {{ date }}</div>
+  {% for q in questions %}
+    <div class="entry">
+      <div class="q">{{ labels.q_prefix }}{{ loop.index }}. {{ q.question_text | math_render | safe }}</div>
+      {% if q.question_type == 'MCQ' and q.options %}
+        <ol type="a" style="margin: 4px 0 4px 24px;">
+          {% for opt in q.options %}<li>{{ opt | math_render | safe }}</li>{% endfor %}
+        </ol>
+      {% endif %}
+      <div class="a"><span class="label">{{ labels.answer }}:</span> {{ q.answer | math_render | safe }}</div>
+      {% if q.explanation %}
+        <div class="e"><span class="label">{{ labels.explanation }}:</span> {{ q.explanation | math_render | safe }}</div>
+      {% endif %}
+    </div>
+    <hr class="sep">
+  {% endfor %}
+</body>
+</html>
+"""
+
 
 @main.route("/api/download/answer_key/<paper_id>", methods=["GET"])
 def download_answer_key(paper_id):
@@ -847,68 +1456,44 @@ def download_answer_key(paper_id):
     with open(json_path, "r", encoding="utf-8") as f:
         paper = json.load(f)
 
-    # NOTE: This still uses reportlab. It may have issues with Hindi rendering.
-    pdfmetrics.registerFont(TTFont("NotoSans", os.path.join(current_app.root_path, "fonts", "NotoSansDevanagari-Regular.ttf")))
-    pdfmetrics.registerFont(TTFont("NotoSans-Bold", os.path.join(current_app.root_path, "fonts", "NotoSansDevanagari-Bold.ttf")))
+    # Detect paper language from any question entry (defaults to English).
+    paper_language = "english"
+    for q in paper.get("questions", []):
+        if (q.get("language") or "").lower() == "hindi":
+            paper_language = "hindi"
+            break
+    lang = "hi" if paper_language == "hindi" else "en"
 
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
-    
-    styles = getSampleStyleSheet()
-    styleN = styles["Normal"]
-    styleN.fontName = "NotoSans"
-    styleB = styles["h5"]
-    styleB.fontName = "NotoSans-Bold"
-    
-    c.setFont("NotoSans-Bold", 16)
-    c.drawCentredString(width/2, height - 50, f"Answer Key - {paper.get('examName', 'Exam')}")
-    c.setFont("NotoSans", 12)
-    c.drawString(50, height - 80, f"School: {paper.get('schoolName', '')}")
-    c.drawString(50, height - 100, f"Class: {paper.get('class', '')} | Subject: {paper.get('subject', '')}")
-    c.line(50, height - 110, width - 50, height - 110)
+    fonts_dir = os.path.join(current_app.root_path, "fonts")
+    font_url_regular = pathlib.Path(os.path.join(fonts_dir, "NotoSansDevanagari-Regular.ttf")).as_uri()
+    bold_path = os.path.join(fonts_dir, "NotoSansDevanagari-Bold.ttf")
+    font_url_bold = pathlib.Path(bold_path).as_uri() if os.path.exists(bold_path) else font_url_regular
 
-    y = height - 140
-    for i, q in enumerate(paper.get("questions", []), 1):
-        question_text = render_simple_math(q.get("question_text", "")) 
-        answer_text = render_simple_math(q.get("answer", "Answer not available")) 
-        explanation_text = render_simple_math(q.get("explanation", "")) 
+    env = current_app.jinja_env
+    env.filters["math_render"] = render_simple_math
 
-        p_q = Paragraph(f"<b>Q{i}:</b> {question_text}", styleN)
-        w, h = p_q.wrap(width - 100, y)
-        if y - h < 50:
-            c.showPage()
-            y = height - 50
-        p_q.drawOn(c, 50, y - h)
-        y -= (h + 10)
+    rendered_html = render_template_string(
+        _ANSWER_KEY_HTML_TEMPLATE,
+        questions=paper.get("questions", []),
+        exam_name=paper.get("examName") or ("परीक्षा" if paper_language == "hindi" else "Exam"),
+        school=paper.get("schoolName") or "",
+        class_=paper.get("class") or "",
+        subject=paper.get("subject") or "",
+        date=datetime.now().strftime("%d-%m-%Y"),
+        font_url_regular=font_url_regular,
+        font_url_bold=font_url_bold,
+        lang_attr=lang,
+        labels=_pdf_labels_for(paper_language),
+    )
 
-        p_a = Paragraph(f"<b>Answer:</b> {answer_text}", styleN)
-        w, h = p_a.wrap(width - 100, y)
-        if y - h < 50:
-            c.showPage()
-            y = height - 50
-        p_a.drawOn(c, 70, y - h)
-        y -= (h + 10)
-
-        if explanation_text:
-            p_exp = Paragraph(f"<b>Explanation:</b> {explanation_text}", styleN)
-            w, h = p_exp.wrap(width - 100, y)
-            if y - h < 50:
-                c.showPage()
-                y = height - 50
-            p_exp.drawOn(c, 70, y - h)
-            y -= (h + 20)
-        else:
-            y -= 10
-
-    c.save()
+    pdf_bytes = HTML(string=rendered_html).write_pdf()
+    buf = io.BytesIO(pdf_bytes)
     buf.seek(0)
-
     return send_file(
         buf,
         as_attachment=True,
         download_name=f"answer_key_{paper_id}.pdf",
-        mimetype="application/pdf"
+        mimetype="application/pdf",
     )
 
 
