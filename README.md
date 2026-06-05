@@ -1,4 +1,22 @@
-# AI Question Paper Generator
+<div align="center">
+
+# 📝 AI Question Paper Generator
+
+![Flask](https://img.shields.io/badge/Flask-000000?style=for-the-badge&logo=flask&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Gemini](https://img.shields.io/badge/Google%20Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+
+**Generate board-aligned exam papers with AI + a curated question bank — export to PDF, Word, and answer key in one click.**
+
+<!-- Hero image: add a screenshot of the generation form or a sample generated paper, save it as docs/screenshot.png, then uncomment the next line: -->
+<!-- ![Paper Generator screenshot](docs/screenshot.png) -->
+
+</div>
+
+> **Highlights** — CBSE / ICSE / State boards · **English & Hindi** (Devanagari) · 4-tier AI fallback (Gemini Flash → Pro → 2.0 → local DB) · MCQ/Short/Long/Case-study mix · PDF (WeasyPrint) + Word (python-docx)
+
+---
 
 A Flask-based web application that generates customized school question papers using AI (Google Gemini API) combined with a structured question bank database. The system supports multiple educational boards, subjects, and languages, with automated PDF and Word document generation.
 
