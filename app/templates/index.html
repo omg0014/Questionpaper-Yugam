@@ -691,8 +691,6 @@
         </div>
     </div>
     
-    <div id="historyPreviewContainer" style="display: none;">
-        </div>
 
   </div>
 
@@ -720,7 +718,6 @@
 
         // --- DOM ELEMENTS ---
         const formContainer = document.getElementById('formContainer');
-        const historyPreviewContainer = document.getElementById('historyPreviewContainer');
         const steps = Array.from(document.querySelectorAll('.form-step'));
         const progressBar = document.getElementById('progressBar');
         const [modeTopicBtn, modeClassBtn] = [document.getElementById('modeTopicBtn'), document.getElementById('modeClassBtn')];
@@ -739,27 +736,8 @@
         const darkModeToggle = document.getElementById('darkModeToggle');
         const langEnBtn = detached(), langHiBtn = detached();
         const step2TotalMarks = document.getElementById('step2TotalMarks');
-        const savedTemplatesGrid = document.getElementById('savedTemplatesGrid') || detached();
-        const clearAllTemplatesBtn = document.getElementById('clearAllTemplates') || detached();
         const generatePaperBtn = document.getElementById('generatePaperBtn');
         const liveGeneratedPaperContainer = document.getElementById('liveGeneratedPaperContainer');
-        const generatedPapersGrid = document.getElementById('generatedPapersGrid') || detached();
-        const clearAllPapersBtn = document.getElementById('clearAllPapers') || detached();
-        const saveAsTemplateBtn = document.getElementById('saveAsTemplateBtn') || detached();
-
-        // --- UI TOGGLING & NAVIGATION ---
-        const showGeneratorView = () => {
-            historyPreviewContainer.style.display = 'none';
-            formContainer.style.display = 'block';
-            document.querySelector('.text-center.mb-5').style.display = 'block';
-        };
-
-        const showHistoryPreview = (htmlContent) => {
-            formContainer.style.display = 'none';
-            document.querySelector('.text-center.mb-5').style.display = 'none';
-            historyPreviewContainer.innerHTML = htmlContent;
-            historyPreviewContainer.style.display = 'block';
-        };
 
         const getLangText = key => langData[document.documentElement.lang || 'en'][key] || key;
         
@@ -1099,207 +1077,9 @@ function buildPayload(){
             return payload;
         }
 
-        // --- TEMPLATES ---
-        function saveTemplate(){
-            const payload = buildPayload();
-            const store = JSON.parse(localStorage.getItem('qp_templates') || '[]');
-            const name = (payload.schoolName || 'Template') + ' — ' + (payload.subject || 'Subject') + ' (Class ' + (payload.class || '?') + ')';
-            const tpl = { name, data: payload, createdAt: new Date().toISOString() };
-            store.push(tpl);
-            localStorage.setItem('qp_templates', JSON.stringify(store));
-            renderTemplates();
-        }
+        // Saved templates and paper history were removed; their functions
+        // went with them.
 
-        function renderTemplates(){
-            const list = JSON.parse(localStorage.getItem('qp_templates') || '[]');
-            savedTemplatesGrid.innerHTML = '';
-            if (!list.length) {
-              savedTemplatesGrid.innerHTML = '<div class="text-muted">No saved templates</div>';
-              return;
-            }
-            list.forEach((tpl, idx) => {
-              const card = document.createElement('div');
-              card.className = 'template-card';
-              card.innerHTML = `
-                <div>
-                  <h6 class="mb-1" style="font-size:0.95rem;">${tpl.name}</h6>
-                  <div class="small text-muted">${new Date(tpl.createdAt).toLocaleString()}</div>
-                  <div class="small mb-2 mt-2"><strong>Board:</strong> ${tpl.data.schoolBoard} &nbsp; <strong>Class:</strong> ${tpl.data.class}</div>
-                  <div class="mb-2"><strong>Subject:</strong> ${tpl.data.subject}</div>
-                </div>
-                <div class="d-flex gap-2 mt-auto pt-2">
-                  <button class="btn btn-sm btn-primary load-btn" data-idx="${idx}"><i class="bi bi-box-arrow-in-down me-1"></i>Load</button>
-                  <button class="btn btn-sm btn-danger del-btn" data-idx="${idx}"><i class="bi bi-trash me-1"></i>Delete</button>
-                </div>
-              `;
-              savedTemplatesGrid.appendChild(card);
-            });
-
-            savedTemplatesGrid.querySelectorAll('.load-btn').forEach(b => b.addEventListener('click', () => {
-              const idx = parseInt(b.dataset.idx,10);
-              applyTemplate(JSON.parse(localStorage.getItem('qp_templates') || '[]')[idx]);
-              const offcanvasEl = document.getElementById('templatesOffcanvas');
-              const bs = bootstrap.Offcanvas.getInstance(offcanvasEl) || new bootstrap.Offcanvas(offcanvasEl);
-              bs.hide();
-            }));
-
-            savedTemplatesGrid.querySelectorAll('.del-btn').forEach(b => b.addEventListener('click', () => {
-              const idx = parseInt(b.dataset.idx,10);
-              if (!confirm('Delete this template?')) return;
-              let list = JSON.parse(localStorage.getItem('qp_templates') || '[]');
-              list.splice(idx,1);
-              localStorage.setItem('qp_templates', JSON.stringify(list));
-              renderTemplates();
-            }));
-        }
-        
-        function applyTemplate(tpl){
-            if (!tpl || !tpl.data) return;
-            const d = tpl.data;
-            showGeneratorView(); // Ensure form is visible
-            // Keep the house default when a saved template carries no school name,
-            // rather than blanking a field the user never edited.
-            schoolName.value = d.schoolName || DEFAULT_SCHOOL_NAME;
-            examName.value = d.examName || '';
-            schoolBoard.value = d.schoolBoard || '';
-            
-            if (d.class) {
-              classSelect.value = d.class;
-              populateSubjects();
-            }
-            
-            setTimeout(()=> {
-              subjectSelect.value = d.subject || '';
-              populateChapters();
-              setTimeout(() => {
-                (d.chapters || []).forEach(chapterValue => {
-                    const cb = chaptersContainer.querySelector(`input[value="${chapterValue}"]`);
-                    if (cb) cb.checked = true;
-                });
-              }, 100);
-
-              if (d.questionDistribution) {
-                document.querySelectorAll('.question-type-group').forEach(group => {
-                  const labelKey = Object.keys(langData.en).find(key => langData.en[key] === group.querySelector('.form-label.fw-bold').textContent.trim());
-                  const typeId = questionTypes.find(qt => qt.labelKey === labelKey)?.id;
-                  const info = d.questionDistribution[typeId];
-                  group.querySelector('.question-count').value = info ? info.count : 0;
-                  group.querySelector('.marks-per-question').value = info ? info.marks : group.querySelector('.marks-per-question').value;
-                  const aEl = group.querySelector('.attempt-any');
-                  if (aEl) aEl.value = (info && info.attemptAny) ? info.attemptAny : '';
-                });
-                updateStep2Totals();
-              }
-              
-              if (d.difficultyDistribution) {
-                handle1.style.left = d.difficultyDistribution.Easy + '%';
-                handle2.style.left = (d.difficultyDistribution.Easy + d.difficultyDistribution.Medium) + '%';
-                updateDistribution();
-              }
-              showStep(0);
-            }, 150);
-        }
-
-        // --- GENERATED PAPERS HISTORY ---
-        function saveGeneratedPaper(paperData) {
-            let papers = JSON.parse(localStorage.getItem('qp_papers') || '[]');
-            const newPaper = {
-                id: Date.now(),
-                examName: paperData.examName || examName.value.trim(),
-                schoolName: paperData.schoolName || schoolName.value.trim(),
-                schoolBoard: paperData.schoolBoard || schoolBoard.value,
-                class: paperData.class || classSelect.value,
-                subject: paperData.subject || subjectSelect.value,
-                questionTotals: paperData.summary || {},
-                questions: paperData.questions || [],
-                pdf_url: paperData.pdf_url,
-                word_url: paperData.word_url,
-                answer_key_url: paperData.answer_key_url
-            };
-            papers.unshift(newPaper);
-            localStorage.setItem('qp_papers', JSON.stringify(papers));
-            renderGeneratedPapers();
-        }
-
-        function renderGeneratedPapers() {
-            const papers = JSON.parse(localStorage.getItem('qp_papers') || '[]');
-            generatedPapersGrid.innerHTML = '';
-            if (!papers.length) {
-              generatedPapersGrid.innerHTML = `<div class="text-muted">No papers generated yet.</div>`;
-              return;
-            }
-            
-            generatedPapersGrid.innerHTML = papers.map((p, idx) => `
-                <div class="template-card" style="cursor: pointer;" data-paper-index="${idx}">
-                  <h6>${p.examName || 'Untitled Exam'}</h6>
-                  <small>Class ${p.class || '-'} - ${p.subject || '-'}</small><br>
-                  <small>Total Q: ${p.questionTotals?.total_questions || 0}, Marks: ${p.questionTotals?.total_marks || 0}</small>
-                </div>
-            `).join('');
-
-            generatedPapersGrid.querySelectorAll('.template-card').forEach(card => {
-                card.addEventListener('click', () => {
-                    openSavedPaper(card.dataset.paperIndex);
-                });
-            });
-        }
-
-function openSavedPaper(index) {
-            const papers = JSON.parse(localStorage.getItem('qp_papers') || '[]');
-            const p = papers[index];
-            if (!p) return;
-
-            const previewHtml = `
-                <div class="row justify-content-center">
-                    <div class="col-lg-10 col-xl-8">
-                        <div class="main-card p-4">
-                            <div class="d-flex justify-content-between align-items-center mb-3">
-                                <h4 class="mb-0">${p.examName || 'Untitled Exam'}</h4>
-                                <button class="btn btn-outline-primary" id="backToGeneratorBtn">
-                                    <i class="bi bi-arrow-left me-1"></i> <span data-lang-key="backToGenerator">Back to Generator</span>
-                                </button>
-                            </div>
-                            <p><b>School:</b> ${p.schoolName || '-'} | <b>Board:</b> ${p.schoolBoard || '-'}</p>
-                            <p><b>Class:</b> ${p.class || '-'} | <b>Subject:</b> ${p.subject || '-'}</p>
-                            <p><b>Total Questions:</b> ${p.questionTotals?.total_questions || 0}, <b>Total Marks:</b> ${p.questionTotals?.total_marks || 0}</p>
-                            
-                            <div class="d-flex gap-2 my-3">
-                                ${p.pdf_url ? `<a href="${p.pdf_url}" class="btn btn-sm btn-outline-primary" target="_blank"><i class="bi bi-file-earmark-pdf me-1"></i>Download PDF</a>` : ""}
-                                ${p.word_url ? `<a href="${p.word_url}" class="btn btn-sm btn-outline-secondary" target="_blank"><i class="bi bi-file-earmark-word me-1"></i>Download Word</a>` : ""}
-                                ${p.answer_key_url ? `<a href="${p.answer_key_url}" class="btn btn-sm btn-outline-success" target="_blank"><i class="bi bi-journal-text me-1"></i>Download Answer Key</a>` : ""}
-                            </div>
-
-                            <hr>
-                            <h6>Questions:</h6>
-                            <div class="questions-list" style="padding: 0.5rem; background-color: var(--bg); border-radius: 8px;">
-                                ${(p.questions || []).map((q, i) => `
-                                    <div class="mb-3">
-                                        <b>Q${i+1}.</b> ${q.question_text || q.question}
-                                        <div>
-                                            <span class="badge bg-secondary">${q.marks || 0} marks</span>
-                                            <span class="badge bg-info">${q.type || 'N/A'}</span>
-                                            <span class="badge bg-warning text-dark">${q.difficulty || 'N/A'}</span>
-                                        </div>
-                                    </div>
-                                `).join('')}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            showHistoryPreview(previewHtml);
-            
-            const backBtn = document.getElementById('backToGeneratorBtn').querySelector('span');
-            backBtn.textContent = getLangText(backBtn.dataset.langKey);
-
-            document.getElementById('backToGeneratorBtn').addEventListener('click', showGeneratorView);
-
-            const offcanvasEl = document.getElementById('papersOffcanvas');
-            const bs = bootstrap.Offcanvas.getInstance(offcanvasEl) || new bootstrap.Offcanvas(offcanvasEl);
-            bs.hide();
-        }
-        
         // --- EVENT LISTENERS ---
         document.addEventListener('click', (e) => {
             if (e.target.closest('.next-btn')) showStep(currentStep + 1);
