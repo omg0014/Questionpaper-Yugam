@@ -328,14 +328,19 @@ _REGISTRY: list[LLMProvider] = []
 # Last known health of the provider chain, surfaced on the home page. Quota
 # exhaustion is only observable from a failed call, so it is recorded here
 # rather than probed.
-_STATUS: dict = {"ok": True, "reason": None, "quota": False}
+_STATUS: dict = {"ok": True, "reason": None, "quota": False, "at": 0.0}
+
+# A failure older than this stops being reported: Groq's free tier trips its
+# 8k tokens-per-minute cap regularly, and one blip should not leave a scary
+# banner up for the rest of the day.
+_STATUS_TTL_SECONDS = 15 * 60
 
 _QUOTA_HINTS = ("429", "rate limit", "rate_limit", "quota", "insufficient_quota",
                 "tokens per", "resource_exhausted", "billing", "credit")
 
 
 def _note_success() -> None:
-    _STATUS.update(ok=True, reason=None, quota=False)
+    _STATUS.update(ok=True, reason=None, quota=False, at=0.0)
 
 
 def _note_failure(err: object) -> None:
@@ -344,6 +349,7 @@ def _note_failure(err: object) -> None:
     _STATUS.update(
         ok=False,
         quota=quota,
+        at=time.time(),
         reason=("The Groq API key has run out of quota or hit its rate limit. "
                 "Update GROQ_API_KEY and redeploy to keep generating papers."
                 if quota else
@@ -359,8 +365,18 @@ def provider_status() -> dict:
             "ok": False, "configured": False, "quota": False,
             "reason": "No AI provider is configured. Set GROQ_API_KEY and redeploy.",
         }
-    return {"ok": _STATUS["ok"], "configured": True,
-            "quota": _STATUS["quota"], "reason": _STATUS["reason"]}
+    stale = _STATUS["at"] and (time.time() - _STATUS["at"]) > _STATUS_TTL_SECONDS
+    if _STATUS["ok"] or stale:
+        return {"ok": True, "configured": True, "quota": False, "reason": ""}
+    return {
+        "ok": False,
+        "configured": True,
+        "quota": _STATUS["quota"],
+        # Never None: the template prints this straight out, and Jinja renders
+        # None as the literal string "None".
+        "reason": _STATUS["reason"] or "AI generation is currently failing. "
+                                       "Check GROQ_API_KEY, then redeploy.",
+    }
 
 
 

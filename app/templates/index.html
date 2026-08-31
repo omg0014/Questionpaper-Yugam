@@ -494,7 +494,7 @@
       <i class="bi bi-exclamation-triangle-fill mt-1"></i>
       <div>
         <strong>AI generation unavailable</strong>
-        <div id="aiStatusReason" class="small">{{ ai_status.reason if ai_status else '' }}</div>
+        <div id="aiStatusReason" class="small">{{ (ai_status.reason if ai_status else '') or '' }}</div>
         <div class="small text-muted">Papers will still be built from the question bank, but new AI questions cannot be generated.</div>
       </div>
     </div>
@@ -1412,7 +1412,8 @@ schoolName.addEventListener('input', updateFinalPreview);
                 const el = document.getElementById('aiStatusBanner');
                 if (!el) return;
                 el.hidden = !!st.ok;
-                if (!st.ok) document.getElementById('aiStatusReason').textContent = st.reason || '';
+                if (!st.ok) document.getElementById('aiStatusReason').textContent =
+                    st.reason || 'AI generation is currently failing. Check GROQ_API_KEY.';
             } catch (e) { /* banner is advisory; ignore probe failures */ }
         }
 
