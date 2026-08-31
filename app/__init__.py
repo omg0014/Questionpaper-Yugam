@@ -49,7 +49,16 @@ def create_app():
                 f"@{db_host}:{db_port}/{db_name}"
             )
         else:
-            database_url = "sqlite:///app.db"
+            # No external database configured: fall back to the curriculum bank
+            # bundled with the image, so the board/class/subject pickers are
+            # populated out of the box and no DB service is required.
+            # Papers and visitor rows are written here too and reset when the
+            # container restarts; the bank itself is read-only and always
+            # survives. Set DATABASE_URL to use a real database instead.
+            seed = os.path.join(os.path.dirname(__file__), "data", "question_bank.db")
+            database_url = (
+                f"sqlite:///{seed}" if os.path.exists(seed) else "sqlite:///app.db"
+            )
 
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
