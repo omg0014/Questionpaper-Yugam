@@ -1,7 +1,7 @@
 """Multi-provider LLM abstraction with automatic failover.
 
 Chains free-tier providers so the app keeps working when any one rate-limits:
-  Gemini 2.5 Flash  ->  Groq (Llama 3.3 70B)  ->  OpenRouter (free models)
+  Gemini  ->  Groq  ->  Yugam AI gateway  ->  OpenRouter (free models)
 
 Each provider implements:
   - generate(prompt) -> str            (one-shot)
@@ -130,7 +130,7 @@ class GeminiProvider(LLMProvider):
 class GroqProvider(LLMProvider):
     name = "groq"
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "openai/gpt-oss-120b"):
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         self.model = model
         self._client = None
@@ -151,7 +151,7 @@ class GroqProvider(LLMProvider):
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
-                max_tokens=8192,
+                max_tokens=6000,
             )
             return (resp.choices[0].message.content or "").strip()
         except Exception as e:
@@ -166,7 +166,7 @@ class GroqProvider(LLMProvider):
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
-                max_tokens=8192,
+                max_tokens=6000,
                 stream=True,
             )
             for chunk in stream:
@@ -184,6 +184,67 @@ class GroqProvider(LLMProvider):
         if any(s in msg for s in ("401", "403", "invalid api key", "unauthorized")):
             return FatalError(f"groq fatal: {e}")
         return TransientError(f"groq unknown: {e}")
+
+
+class YugamProvider(LLMProvider):
+    """Yugam AI gateway (https://ai.yugam.co).
+
+    Not OpenAI-compatible: auth is an X-API-Key header, the body is
+    {"prompt": ...}, and the reply comes back as {"reply": ...}.
+    Self-hosted and noticeably slower than the hosted providers, so it sits
+    late in the chain as a backup. Mode "balanced" is used deliberately —
+    "fast" emits type names like "multiplechoice" that _normalize_qtype
+    does not map to a section.
+    """
+
+    name = "yugam"
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        mode: str = "balanced",
+    ):
+        self.api_key = api_key or os.getenv("YUGAM_API_KEY")
+        self.base_url = (base_url or os.getenv("YUGAM_API_URL")
+                         or "https://ai.yugam.co/api/v1").rstrip("/")
+        self.mode = mode
+
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+    @retry(**_RETRY)
+    def _call(self, prompt: str) -> str:
+        import requests
+        try:
+            # Answers run on their own hardware; docs advise >= 300s.
+            resp = requests.post(
+                f"{self.base_url}/chat",
+                headers={"X-API-Key": self.api_key,
+                         "Content-Type": "application/json"},
+                json={"prompt": prompt, "mode": self.mode},
+                timeout=300,
+            )
+        except Exception as e:
+            raise TransientError(f"yugam network: {e}")
+
+        if resp.status_code >= 400:
+            raise self._classify_status(resp.status_code, resp.text[:300])
+        try:
+            return (resp.json().get("reply") or "").strip()
+        except ValueError as e:
+            raise TransientError(f"yugam bad JSON envelope: {e}")
+
+    def generate(self, prompt: str) -> str:
+        return self._call(prompt)
+
+    @staticmethod
+    def _classify_status(code: int, body: str) -> ProviderError:
+        if code in (401, 403):
+            return FatalError(f"yugam fatal: {code} {body}")
+        if code == 400:
+            return FatalError(f"yugam fatal: {code} {body}")
+        return TransientError(f"yugam transient: {code} {body}")
 
 
 class OpenRouterProvider(LLMProvider):
@@ -264,12 +325,52 @@ class OpenRouterProvider(LLMProvider):
 
 _REGISTRY: list[LLMProvider] = []
 
+# Last known health of the provider chain, surfaced on the home page. Quota
+# exhaustion is only observable from a failed call, so it is recorded here
+# rather than probed.
+_STATUS: dict = {"ok": True, "reason": None, "quota": False}
+
+_QUOTA_HINTS = ("429", "rate limit", "rate_limit", "quota", "insufficient_quota",
+                "tokens per", "resource_exhausted", "billing", "credit")
+
+
+def _note_success() -> None:
+    _STATUS.update(ok=True, reason=None, quota=False)
+
+
+def _note_failure(err: object) -> None:
+    msg = str(err).lower()
+    quota = any(h in msg for h in _QUOTA_HINTS)
+    _STATUS.update(
+        ok=False,
+        quota=quota,
+        reason=("The Groq API key has run out of quota or hit its rate limit. "
+                "Update GROQ_API_KEY and redeploy to keep generating papers."
+                if quota else
+                "AI generation is currently failing. Check GROQ_API_KEY, then redeploy."),
+    )
+
+
+def provider_status() -> dict:
+    """Health of the AI chain for the home-page banner."""
+    providers = available_providers()
+    if not providers:
+        return {
+            "ok": False, "configured": False, "quota": False,
+            "reason": "No AI provider is configured. Set GROQ_API_KEY and redeploy.",
+        }
+    return {"ok": _STATUS["ok"], "configured": True,
+            "quota": _STATUS["quota"], "reason": _STATUS["reason"]}
+
+
 
 def init_providers() -> list[LLMProvider]:
     """Build and cache the provider chain in priority order."""
     global _REGISTRY
     chain: list[LLMProvider] = []
-    for cls in (GeminiProvider, GroqProvider, OpenRouterProvider):
+    # Groq only for now. Gemini (project denied) and Yugam are parked — add
+    # them back to this tuple to re-enable the failover chain.
+    for cls in (GroqProvider,):
         try:
             p = cls()
             if p.is_available():
@@ -305,12 +406,14 @@ def generate_with_fallback(prompt: str) -> tuple[str, str]:
         try:
             out = p.generate(prompt)
             log.info("provider=%s status=ok latency_ms=%d", p.name, int((time.monotonic() - t0) * 1000))
+            _note_success()
             return out, p.name
         except Exception as e:
             log.warning("provider=%s status=fail latency_ms=%d err=%s",
                         p.name, int((time.monotonic() - t0) * 1000), e)
             last_err = e
             continue
+    _note_failure(last_err)
     raise ProviderError(f"All providers failed; last error: {last_err}")
 
 
@@ -332,9 +435,11 @@ def stream_with_fallback(prompt: str) -> Iterator[tuple[str, str]]:
                 yielded_any = True
                 yield chunk, p.name
             if yielded_any:
+                _note_success()
                 return
         except Exception as e:
             log.warning("stream provider=%s failed: %s", p.name, e)
             last_err = e
             continue
+    _note_failure(last_err)
     raise ProviderError(f"All streaming providers failed; last error: {last_err}")

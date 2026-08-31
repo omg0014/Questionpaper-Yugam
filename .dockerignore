@@ -1,0 +1,26 @@
+# Never ship the local virtualenv — it is ~338 MB and is rebuilt from
+# requirements.txt inside the image anyway.
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets and local-only config
+.env
+.env.local
+yugam-ai.md
+
+# Generated artefacts
+app/static/papers/
+generated/
+app.db
+instance/
+
+# Repo/editor noise
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

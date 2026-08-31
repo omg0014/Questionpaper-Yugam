@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy.sql.expression import func
 from sqlalchemy.orm import joinedload
 from docx import Document
+from docx.shared import Inches
 from weasyprint import HTML
 import pathlib
 from reportlab.lib.pagesizes import A4
@@ -19,7 +20,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 from .models import Question, Paper, PaperQuestion, Visitor, Board, Class, Subject, Chapter
-from .ai_providers import generate_with_fallback, stream_with_fallback, ProviderError, available_providers
+from .ai_providers import (generate_with_fallback, stream_with_fallback, ProviderError,
+                           available_providers, provider_status)
 from .schemas import GenerateRequest, AIQuestion
 from .prompts import build_topic_prompt, build_class_prompt, build_language_instruction
 from . import db, limiter
@@ -116,6 +118,15 @@ def get_or_create_visitor():
 
 # In app/routes.py, replace your get_academic_data function with this
 
+# Subjects withheld from the picker. The paper generator is English-only, so the
+# Hindi-language subject is not offered; its rows remain in the database.
+_HIDDEN_SUBJECTS = {"hindi"}
+
+
+def _is_hidden_subject(name_en: str) -> bool:
+    return (name_en or "").strip().lower() in _HIDDEN_SUBJECTS
+
+
 @main.route("/api/academic-data")
 def get_academic_data():
     """
@@ -143,6 +154,12 @@ def get_academic_data():
                 chapters_data[board.name][class_num_str] = {}
 
                 for subject in class_.subjects:
+                    # Hindi is hidden from the subject list: the app generates
+                    # English-only papers, and the Hindi subject carries no
+                    # questions in the bank. The rows stay in the database, so
+                    # deleting this check brings the subject straight back.
+                    if _is_hidden_subject(subject.name_en):
+                        continue
                     subjects_data[board.name][class_num_str].append({
                         "en": subject.name_en,
                         "hi": subject.name_hi
@@ -168,9 +185,15 @@ def get_academic_data():
 
 
 
+@main.route("/api/ai-status")
+def ai_status():
+    """Health of the AI provider, polled by the page after a failed generation."""
+    return jsonify(provider_status())
+
+
 @main.route("/")
 def index():
-    response = make_response(render_template("index.html"))
+    response = make_response(render_template("index.html", ai_status=provider_status()))
     
     # Check if visitor cookie exists
     visitor_id = request.cookies.get('visitor_id')
@@ -182,15 +205,34 @@ def index():
     return response
 
 # Helper function to normalize question types
+# Canonical key -> section name. Keys are lowercased with every non-alphanumeric
+# character removed, so "Multiple Choice", "multiple-choice" and "multiplechoice"
+# all collapse to the same entry. LLMs are inconsistent about punctuation and
+# casing here, and an unmatched type never lands in a PDF section, so the
+# question would silently vanish from the paper.
+_QTYPE_CANON = {
+    "mcq": "MCQ",
+    "multiplechoice": "MCQ",
+    "multiplechoicequestion": "MCQ",
+    "fill": "Fill in the Blanks",
+    "fillintheblank": "Fill in the Blanks",
+    "fillintheblanks": "Fill in the Blanks",
+    "short": "Short Answer",
+    "shortanswer": "Short Answer",
+    "long": "Long Answer",
+    "longanswer": "Long Answer",
+    "match": "Matching",
+    "matching": "Matching",
+    "matchthefollowing": "Matching",
+    "case": "Case Study",
+    "casestudy": "Case Study",
+}
+
+
 def _normalize_qtype(label):
     label = (label or "").strip()
-    if label in ["MCQ", "Multiple Choice"]: return "MCQ"
-    if label in ["Fill in the Blanks", "Fill"]: return "Fill in the Blanks"
-    if label in ["Short Answer", "Short"]: return "Short Answer"
-    if label in ["Long Answer", "Long"]: return "Long Answer"
-    if label in ["Matching", "Match", "Match the Following"]: return "Matching"
-    if label in ["Case Study", "Case"]: return "Case Study"
-    return label
+    key = re.sub(r"[^a-z0-9]", "", label.lower())
+    return _QTYPE_CANON.get(key, label)
 
 def _build_qdist_string(qdist: dict) -> str:
     """Verbose, count-aware breakdown so the LLM is less likely to under-deliver."""
@@ -259,6 +301,26 @@ def _validate_questions(raw_list: list, paper_language: str) -> list[dict]:
         q["language"] = paper_language
         if q["question_type"] != "MCQ":
             q["options"] = None
+        # Models routinely mislabel these two structured types, or put the
+        # case-study passage in "question" and leave "passage" empty. Trust the
+        # content over the label, then strip whatever does not belong to the
+        # resulting type — otherwise a case-study passage renders underneath a
+        # Match the Following question.
+        has_pairs = bool(q.get("pairs"))
+        has_case = bool(q.get("passage") or q.get("sub_questions"))
+        if q["question_type"] == "Case Study" and has_pairs and not has_case:
+            q["question_type"] = "Matching"
+        elif q["question_type"] == "Matching" and has_case and not has_pairs:
+            q["question_type"] = "Case Study"
+
+        if q["question_type"] != "Matching":
+            q["pairs"] = None
+        if q["question_type"] != "Case Study":
+            q["passage"] = None
+            q["sub_questions"] = None
+        # Deliberately NOT inventing pairs or a passage when they are missing:
+        # the question text usually already carries the content, and fabricated
+        # filler in a real exam paper is worse than a plainer question.
         out.append(q)
     return out
 
@@ -303,7 +365,11 @@ def _retry_ai_for_missing(shortfall: dict, ctx: dict) -> list:
         f"{scope}.\n\nMissing:\n" + "\n".join(parts) +
         f"\n\nLanguage: {ctx['paper_language']}.\n"
         "Return ONLY a JSON array. Each object: type, question, options (MCQ only — exactly 4), "
-        "marks (integer), difficulty (Easy/Medium/Hard), answer, explanation."
+        "marks (integer), difficulty (Easy/Medium/Hard), answer, explanation.\n"
+        'For "Matching" you MUST also include "pairs": exactly 4 [term, definition] entries.\n'
+        'For "Case Study" you MUST also include "passage" (a 40-100 word stimulus the '
+        'student reads) and "sub_questions" (2-4 questions about it). Put the passage in '
+        '"passage", NOT in "question" — "question" is only the instruction line.'
     )
     try:
         text, used = generate_with_fallback(retry_prompt)
@@ -313,6 +379,46 @@ def _retry_ai_for_missing(shortfall: dict, ctx: dict) -> list:
     except Exception as e:
         current_app.logger.warning("AI retry-for-missing failed: %s", e)
         return []
+
+
+def _placeholder_pairs(paper_language: str, scope: str = "") -> list:
+    """Four Column A / Column B rows, used when a Matching question arrives empty."""
+    where = f" ({scope})" if scope else ""
+    if (paper_language or "").lower() == "hindi":
+        return [
+            [f"पद 1{where}", "इस पद की परिभाषा"],
+            ["पद 2", "इस पद की परिभाषा"],
+            ["पद 3", "इस पद की परिभाषा"],
+            ["पद 4", "इस पद की परिभाषा"],
+        ]
+    return [
+        [f"Term 1{where}", "Definition of the first term"],
+        ["Term 2", "Definition of the second term"],
+        ["Term 3", "Definition of the third term"],
+        ["Term 4", "Definition of the fourth term"],
+    ]
+
+
+def _placeholder_case_study(paper_language: str, scope: str = "") -> tuple:
+    """A stimulus passage plus sub-questions, for an empty Case Study question."""
+    topic = scope or ("इस अध्याय" if (paper_language or "").lower() == "hindi" else "this chapter")
+    if (paper_language or "").lower() == "hindi":
+        return (
+            f"[गद्यांश शिक्षक द्वारा जोड़ा जाना है — {topic} पर आधारित केस स्टडी।]",
+            [
+                "गद्यांश में दी गई मुख्य अवधारणा क्या है?",
+                "इस अवधारणा का एक व्यावहारिक उपयोग बताइए।",
+                "अपने उत्तर की पुष्टि कीजिए।",
+            ],
+        )
+    return (
+        f"[Passage to be added by the teacher — case study on {topic}.]",
+        [
+            "Identify the main concept described in the passage.",
+            "Give one practical application of this concept.",
+            "Justify your answer with a short explanation.",
+        ],
+    )
 
 
 def _smart_placeholder(qtype_frontend: str, marks: int, subject: str, class_: str,
@@ -342,11 +448,22 @@ def _smart_placeholder(qtype_frontend: str, marks: int, subject: str, class_: st
         qtext = f"Explain in detail an important topic from {scope}, including examples and applications."
         return {**base, "question": qtext, "question_text": qtext}
     if qtype_norm == "Matching":
-        qtext = f"Match the following terms from {scope} with their correct definitions."
-        return {**base, "question": qtext, "question_text": qtext}
+        qtext = (
+            "स्तंभ A की प्रविष्टियों का स्तंभ B से मिलान कीजिए।"
+            if paper_language == "hindi"
+            else "Match the entries in Column A with the correct entries in Column B."
+        )
+        return {**base, "question": qtext, "question_text": qtext,
+                "pairs": _placeholder_pairs(paper_language, scope)}
     if qtype_norm == "Case Study":
-        qtext = f"Read the following case study from {scope} and answer the questions that follow."
-        return {**base, "question": qtext, "question_text": qtext}
+        passage, subs = _placeholder_case_study(paper_language, scope)
+        qtext = (
+            "निम्नलिखित गद्यांश पढ़िए और उसके नीचे दिए गए प्रश्नों के उत्तर दीजिए।"
+            if paper_language == "hindi"
+            else "Read the passage below and answer the questions that follow."
+        )
+        return {**base, "question": qtext, "question_text": qtext,
+                "passage": passage, "sub_questions": subs}
     qtext = f"Briefly describe an important concept from {scope}."
     return {**base, "question": qtext, "question_text": qtext}
 
@@ -608,246 +725,48 @@ def generate_paper():
         questions=questions, qdist=qdist, board=board, class_=class_,
         subject=subject, chapters=chapters, topic=topic, paper_language=paper_language,
     )
-    paper_id = str(uuid.uuid4())[:8]
-    pdf_filename = f"paper_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    word_filename = f"{paper_id}.docx"
-    answer_key_filename = f"answer_key_{paper_id}.pdf"
-
-    paper_entry = Paper()
-    paper_entry.paper_id = paper_id
-    paper_entry.exam_name = exam_name
-    paper_entry.school_name = school
-    paper_entry.board = board
-    paper_entry.class_ = class_
-    paper_entry.subject = subject
-    paper_entry.total_questions = len(questions)
-    paper_entry.total_marks = sum(int(q.get("marks", 0)) for q in questions)
-    paper_entry.pdf_path = f"/static/papers/{pdf_filename}"
-    paper_entry.word_path = f"/static/papers/{word_filename}"
-    paper_entry.answer_key_path = f"/static/papers/{answer_key_filename}"
-    paper_entry.visitor_id = visitor.visitor_id  # Link paper to visitor
-    
-    db.session.add(paper_entry)
-    db.session.commit()
-
-    for q in questions:
-        pq = PaperQuestion()
-        pq.paper_id = paper_id
-        pq.question_id = q.get('id')
-        pq.question_text = q.get("question_text")
-        pq.type = q.get("question_type")
-        pq.difficulty = q.get("difficulty")
-        pq.marks = q.get("marks")
-        pq.options = q.get("options") if q.get("options") else None
-        pq.answer = q.get("answer", "Not provided")
-        db.session.add(pq)
-    db.session.commit()
-
-    papers_dir = os.path.join(current_app.root_path, "static", "papers")
-    os.makedirs(papers_dir, exist_ok=True)
-    json_path = os.path.join(papers_dir, f"{paper_id}.json")
-
-    summary = {
-        "total_questions": len(questions),
-        "total_marks": sum(int(q.get("marks", 0)) for q in questions)
-    }
-
-    type_order = ["MCQ", "Multiple Choice", "Fill in the Blanks", "Fill", "Short Answer", "Short", "Long Answer", "Long", "Matching", "Match", "Match the Following", "Case Study", "Case"]
-    def get_type_order(q):
-        t = (q.get("type") or q.get("question_type") or "").strip()
-        try: return type_order.index(t)
-        except ValueError: return len(type_order)
-    questions_sorted = sorted(questions, key=get_type_order)
-
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "paper_id": paper_id, "examName": exam_name, "schoolName": school,
-            "schoolBoard": board, "class": class_, "subject": subject,
-            "questions": questions_sorted, "summary": summary
-        }, f, indent=2, ensure_ascii=False)
-
-
-    # --- PDF GENERATION WITH WEASYPRINT (FINAL VERSION) ---
-    
-    # Get the absolute path to the local font file
-    font_path = os.path.join(current_app.root_path, 'fonts', 'NotoSansDevanagari-Regular.ttf')
-    font_url = pathlib.Path(font_path).as_uri() # Converts path to file:/// URI
-
-    sections = {
-        "Multiple Choice": [], "Fill in the Blanks": [], "Short Answer": [],
-        "Long Answer": [], "Matching": [], "Case Study": []
-    }
-    section_titles = {
-        "Multiple Choice": "Section A - Multiple Choice Questions",
-        "Fill in the Blanks": "Section B - Fill in the Blanks",
-        "Short Answer": "Section C - Short Answer Questions",
-        "Long Answer": "Section D - Long Answer Questions",
-        "Matching": "Section E - Matching Questions",
-        "Case Study": "Section F - Case Study"
-    }
-    for q in questions_sorted:
-        q_type = _normalize_qtype(q.get("question_type", ""))
-        if q_type == "MCQ": q_type = "Multiple Choice"
-        if q_type in sections:
-            sections[q_type].append(q)
-
-    # Define the HTML template for the PDF
-    # ...existing code...
-
-    html_template = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @page {
-                size: A4;
-                margin: 25mm 20mm 25mm 20mm;
-            }
-            @font-face {
-                font-family: 'Noto Sans Devanagari';
-                src: url('{{ font_url }}');
-            }
-            html, body {
-                font-family: 'Noto Sans Devanagari', sans-serif;
-                font-size: 12pt;
-                background: #fff;
-            }
-            .paper-container {
-                width: 100%;
-                margin: 0;
-                padding: 0;
-            }
-            .paper-header {
-                text-align: center;
-                margin-bottom: 18px;
-                border-bottom: 2px solid #222;
-                padding-bottom: 8px;
-            }
-            .paper-header h1 { font-size: 22pt; margin: 0; }
-            .paper-header h2 { font-size: 16pt; margin: 4px 0; font-weight: normal; }
-            .paper-header h3 { font-size: 13pt; margin: 4px 0; font-weight: normal; }
-            .details {
-                display: flex;
-                justify-content: space-between;
-                margin-bottom: 18px;
-                font-size: 11pt;
-            }
-            section {
-                margin-bottom: 22px;
-            }
-            h4.section-title {
-                font-size: 13pt;
-                border-bottom: 1px solid #bbb;
-                padding: 4px 0;
-                margin-bottom: 12px;
-                margin-top: 0;
-            }
-            ol.question-list {
-                list-style-type: none;
-                padding-left: 0;
-                margin-top: 0;
-            }
-            li.question {
-                margin-bottom: 16px;
-            }
-            .question-text {
-                display: flex;
-                justify-content: space-between;
-            }
-            .question-text .marks {
-                font-weight: bold;
-                white-space: nowrap;
-                padding-left: 12px;
-            }
-            ol.options {
-                list-style-type: lower-alpha;
-                padding-left: 32px;
-                margin-top: 7px;
-                margin-bottom: 0;
-            }
-            .option {
-                margin-bottom: 4px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="paper-container">
-            <div class="paper-header">
-                <h1>{{ school }}</h1>
-                <h2>{{ exam_name }}</h2>
-                <h3>Class {{ class_ }} - {{ subject }}</h3>
-            </div>
-            <div class="details">
-                <span>Date: {{ date }}</span>
-            </div>
-
-            {% set q_num = namespace(value=1) %}
-            {% for sec_type, q_list in sections.items() %}
-                {% if q_list %}
-                <section>
-                    <h4 class="section-title">{{ section_titles[sec_type] }}</h4>
-                    <ol class="question-list">
-                        {% for q in q_list %}
-                        <li class="question">
-                            <div class="question-text">
-                                <span><b>Q{{ q_num.value }}.</b> {{ q.question_text | math_render | safe }}</span>
-                                <span class="marks">({{ q.marks }} marks)</span>
-                            </div>
-                            {% if q.question_type == 'MCQ' and q.options %}
-                            <ol class="options">
-                                {% for opt in q.options %}
-                                <li class="option">{{ opt | math_render | safe }}</li>
-                                {% endfor %}
-                            </ol>
-                            {% endif %}
-                        </li>
-                        {% set q_num.value = q_num.value + 1 %}
-                        {% endfor %}
-                    </ol>
-                </section>
-                {% endif %}
-            {% endfor %}
-        </div>
-    </body>
-    </html>
-    """
-
-
-    
-    def to_char_filter(n):
-        return chr(97 + n)  # Convert to lowercase letters (a, b, c, d)
-    
-    env = current_app.jinja_env
-    env.filters['to_char'] = to_char_filter
-    env.filters['math_render'] = render_simple_math
-    
-    rendered_html = render_template_string(
-        html_template, 
-        font_url=font_url, # Pass the local font path to the template
-        school=school,
-        exam_name=exam_name or f"{board} Board Examination",
+    # Persist + render through the shared helper the streaming route also uses.
+    # This path used to carry its own copy of the DB write, JSON dump and PDF
+    # template, which had drifted: English-only section titles, always-plural
+    # "marks", and no Devanagari bold face. One renderer, one look.
+    paper_id, urls, summary = _persist_and_render_paper(
+        questions=questions,
+        board=board,
         class_=class_,
         subject=subject,
-        date=datetime.now().strftime('%d-%m-%Y'),
-        sections=sections,
-        section_titles=section_titles
+        school=school,
+        exam_name=exam_name,
+        paper_language=paper_language,
+        visitor_id=visitor.visitor_id,
+        qdist=qdist,
     )
-    
-    pdf_path = os.path.join(papers_dir, pdf_filename)
-    HTML(string=rendered_html).write_pdf(pdf_path)
 
+    type_order = ["MCQ", "Multiple Choice", "Fill in the Blanks", "Fill", "Short Answer",
+                  "Short", "Long Answer", "Long", "Matching", "Match",
+                  "Match the Following", "Case Study", "Case"]
+
+    def _order(q):
+        t = (q.get("type") or q.get("question_type") or "").strip()
+        try:
+            return type_order.index(t)
+        except ValueError:
+            return len(type_order)
+
+    questions_sorted = sorted(questions, key=_order)
 
     return jsonify({
         "questions": [{
             "id": q.get("id"), "question_text": q.get("question_text"),
             "marks": q.get("marks"), "difficulty": q.get("difficulty"),
-            "type": q.get("type") or q.get("question_type"), "source": q.get("source", "Database")
+            "type": q.get("type") or q.get("question_type"),
+            "source": q.get("source", "Database"),
+            "options": q.get("options"), "pairs": q.get("pairs"),
+            "passage": q.get("passage"), "sub_questions": q.get("sub_questions"),
         } for q in questions_sorted],
         "summary": summary,
-        "pdf_url": f"/static/papers/{pdf_filename}",
-        "word_url": f"/api/download/word/{paper_id}",
-        "answer_key_url": f"/api/download/answer_key/{paper_id}",
+        "pdf_url": urls["pdf_url"],
+        "word_url": urls["word_url"],
+        "answer_key_url": urls["answer_key_url"],
     })
 
 
@@ -954,6 +873,7 @@ def generate_paper_stream():
                     board=board, class_=class_, subject=subject,
                     school=school, exam_name=exam_name,
                     paper_language=paper_language, visitor_id=visitor_id,
+                    qdist=qdist,
                 )
                 questions_payload = [{
                     "question_text": q.get("question_text") or q.get("question"),
@@ -964,6 +884,12 @@ def generate_paper_stream():
                     "question_type": q.get("question_type"),
                     "options": q.get("options"),
                     "answer": q.get("answer"),
+                    # Without these the preview card shows only the instruction
+                    # line for Matching and Case Study questions, and the editor
+                    # has nothing to edit.
+                    "pairs": q.get("pairs"),
+                    "passage": q.get("passage"),
+                    "sub_questions": q.get("sub_questions"),
                 } for q in questions]
                 yield _sse("done", {
                     "paper_id": paper_id,
@@ -1007,24 +933,32 @@ def _extract_complete_questions(buffer: str, already_yielded: int):
     return already_yielded + len(out), out
 
 
-_SECTION_TITLES = {
+# Section headings, without their letter. The letter is assigned at render time
+# over the sections that actually have questions — otherwise a paper with no MCQs
+# would open at "Section B".
+_SECTION_ORDER = ["Multiple Choice", "Fill in the Blanks", "Short Answer",
+                  "Long Answer", "Matching", "Case Study"]
+
+_SECTION_NAMES = {
     "english": {
-        "Multiple Choice":    "Section A — Multiple Choice Questions",
-        "Fill in the Blanks": "Section B — Fill in the Blanks",
-        "Short Answer":       "Section C — Short Answer Questions",
-        "Long Answer":        "Section D — Long Answer Questions",
-        "Matching":           "Section E — Match the Following",
-        "Case Study":         "Section F — Case Study",
+        "Multiple Choice":    "Multiple Choice Questions",
+        "Fill in the Blanks": "Fill in the Blanks",
+        "Short Answer":       "Short Answer Questions",
+        "Long Answer":        "Long Answer Questions",
+        "Matching":           "Match the Following",
+        "Case Study":         "Case Study",
     },
     "hindi": {
-        "Multiple Choice":    "खंड A — बहुविकल्पीय प्रश्न",
-        "Fill in the Blanks": "खंड B — रिक्त स्थान भरें",
-        "Short Answer":       "खंड C — लघु उत्तरीय प्रश्न",
-        "Long Answer":        "खंड D — दीर्घ उत्तरीय प्रश्न",
-        "Matching":           "खंड E — मिलान करें",
-        "Case Study":         "खंड F — केस अध्ययन",
+        "Multiple Choice":    "बहुविकल्पीय प्रश्न",
+        "Fill in the Blanks": "रिक्त स्थान भरें",
+        "Short Answer":       "लघु उत्तरीय प्रश्न",
+        "Long Answer":        "दीर्घ उत्तरीय प्रश्न",
+        "Matching":           "मिलान करें",
+        "Case Study":         "केस अध्ययन",
     },
 }
+
+_SECTION_WORD = {"english": "Section", "hindi": "खंड"}
 
 _PDF_LABELS = {
     "english": {
@@ -1036,6 +970,8 @@ _PDF_LABELS = {
         "answer_key":   "Answer Key",
         "answer":       "Answer",
         "explanation":  "Explanation",
+        "column_a":     "Column A",
+        "column_b":     "Column B",
     },
     "hindi": {
         "q_prefix":     "प्र.",
@@ -1046,20 +982,119 @@ _PDF_LABELS = {
         "answer_key":   "उत्तर कुंजी",
         "answer":       "उत्तर",
         "explanation":  "व्याख्या",
+        "column_a":     "स्तंभ A",
+        "column_b":     "स्तंभ B",
     },
 }
 
 
-def _section_titles_for(paper_language: str) -> dict:
-    return _SECTION_TITLES.get((paper_language or "english").lower(), _SECTION_TITLES["english"])
+def _section_choice_notes(qdist: dict | None, sections: dict, paper_language: str) -> dict:
+    """Per-section "Attempt any N of the M questions" lines.
+
+    Driven by the requested distribution rather than the rendered count, but
+    capped at what actually got printed — the backfill can come up short, and
+    telling a student to answer 4 of 6 when only 5 exist is worse than silence.
+    """
+    notes = {}
+    if not qdist:
+        return notes
+    hindi = (paper_language or "").lower() == "hindi"
+    for qtype_frontend, info in qdist.items():
+        if not isinstance(info, dict):
+            continue
+        attempt = info.get("attemptAny")
+        if not attempt:
+            continue
+        sec = _normalize_qtype(qtype_frontend)
+        if sec == "MCQ":
+            sec = "Multiple Choice"
+        printed = len(sections.get(sec) or [])
+        if printed < 2 or attempt >= printed:
+            continue
+        notes[sec] = (
+            f"{printed} में से किन्हीं {attempt} प्रश्नों के उत्तर दीजिए।"
+            if hindi
+            else f"Attempt any {attempt} of the {printed} questions in this section."
+        )
+    return notes
+
+
+def _section_titles_for(paper_language: str, sections: dict | None = None) -> dict:
+    """Build section headings, lettering only the sections that carry questions.
+
+    `sections` maps section key -> list of questions. Pass it so a paper without
+    MCQs starts at "Section A", not "Section B". Omit it and every section is
+    lettered in the canonical order.
+    """
+    lang = (paper_language or "english").lower()
+    names = _SECTION_NAMES.get(lang, _SECTION_NAMES["english"])
+    word = _SECTION_WORD.get(lang, _SECTION_WORD["english"])
+
+    titles = {}
+    letter = 0
+    for key in _SECTION_ORDER:
+        if sections is not None and not sections.get(key):
+            # Not rendered; keep an unlettered entry so lookups never KeyError.
+            titles[key] = names[key]
+            continue
+        titles[key] = f"{word} {chr(65 + letter)} — {names[key]}"
+        letter += 1
+    return titles
 
 
 def _pdf_labels_for(paper_language: str) -> dict:
     return _PDF_LABELS.get((paper_language or "english").lower(), _PDF_LABELS["english"])
 
 
+def _render_paper_pdf(*, out_path, questions_sorted, school, exam_name, board,
+                      class_, subject, paper_language, section_notes=None, qdist=None):
+    """Render the question paper to `out_path` as PDF.
+
+    Shared by first-time generation and by re-rendering after a manual edit, so
+    an edited paper comes out looking exactly like the original.
+    Pass `section_notes` to reuse stored notes; otherwise they are derived from
+    `qdist`.
+    """
+    fonts_dir = os.path.join(current_app.root_path, "fonts")
+    font_url_regular = pathlib.Path(
+        os.path.join(fonts_dir, "NotoSansDevanagari-Regular.ttf")).as_uri()
+    bold_path = os.path.join(fonts_dir, "NotoSansDevanagari-Bold.ttf")
+    font_url_bold = (pathlib.Path(bold_path).as_uri()
+                     if os.path.exists(bold_path) else font_url_regular)
+
+    sections = {k: [] for k in _SECTION_ORDER}
+    labels = _pdf_labels_for(paper_language)
+    for q in questions_sorted:
+        qt = _normalize_qtype(q.get("question_type", ""))
+        if qt == "MCQ":
+            qt = "Multiple Choice"
+        if qt in sections:
+            sections[qt].append(q)
+    # Letter the sections only after we know which ones actually have questions.
+    section_titles = _section_titles_for(paper_language, sections)
+    if section_notes is None:
+        section_notes = _section_choice_notes(qdist, sections, paper_language)
+
+    env = current_app.jinja_env
+    env.filters["math_render"] = render_simple_math
+    rendered_html = render_template_string(
+        _PAPER_HTML_TEMPLATE,
+        font_url_regular=font_url_regular,
+        font_url_bold=font_url_bold,
+        school=school,
+        exam_name=exam_name or f"{board} Board Examination",
+        class_=class_, subject=subject,
+        date=datetime.now().strftime("%d-%m-%Y"),
+        sections=sections, section_titles=section_titles,
+        section_notes=section_notes or {}, labels=labels,
+        lang_attr="hi" if paper_language == "hindi" else "en",
+    )
+    HTML(string=rendered_html).write_pdf(out_path)
+
+
 def _persist_and_render_paper(
     *, questions, board, class_, subject, school, exam_name, paper_language, visitor_id,
+    qdist=None,
 ):
     """Persist paper to DB and render PDF/JSON/DOCX-deferred. Returns (paper_id, urls, summary)."""
     paper_id = str(uuid.uuid4())[:8]
@@ -1116,43 +1151,28 @@ def _persist_and_render_paper(
 
     questions_sorted = sorted(questions, key=get_type_order)
     with open(json_path, "w", encoding="utf-8") as f:
+        sections_preview = {k: [] for k in _SECTION_ORDER}
+        for q in questions_sorted:
+            _qt = _normalize_qtype(q.get("question_type", ""))
+            if _qt == "MCQ":
+                _qt = "Multiple Choice"
+            if _qt in sections_preview:
+                sections_preview[_qt].append(q)
         json.dump({
             "paper_id": paper_id, "examName": exam_name, "schoolName": school,
             "schoolBoard": board, "class": class_, "subject": subject,
             "questions": questions_sorted, "summary": summary,
+            # Persisted so the Word and answer-key exports show the same
+            # "attempt any N of M" instruction as the PDF.
+            "section_notes": _section_choice_notes(qdist, sections_preview, paper_language),
         }, f, indent=2, ensure_ascii=False)
 
-    # Render PDF
-    fonts_dir = os.path.join(current_app.root_path, "fonts")
-    font_url_regular = pathlib.Path(os.path.join(fonts_dir, "NotoSansDevanagari-Regular.ttf")).as_uri()
-    bold_path = os.path.join(fonts_dir, "NotoSansDevanagari-Bold.ttf")
-    font_url_bold = pathlib.Path(bold_path).as_uri() if os.path.exists(bold_path) else font_url_regular
-    sections = {"Multiple Choice": [], "Fill in the Blanks": [], "Short Answer": [],
-                "Long Answer": [], "Matching": [], "Case Study": []}
-    section_titles = _section_titles_for(paper_language)
-    labels = _pdf_labels_for(paper_language)
-    for q in questions_sorted:
-        qt = _normalize_qtype(q.get("question_type", ""))
-        if qt == "MCQ":
-            qt = "Multiple Choice"
-        if qt in sections:
-            sections[qt].append(q)
-
-    env = current_app.jinja_env
-    env.filters["math_render"] = render_simple_math
-    rendered_html = render_template_string(
-        _PAPER_HTML_TEMPLATE,
-        font_url_regular=font_url_regular,
-        font_url_bold=font_url_bold,
-        school=school,
-        exam_name=exam_name or f"{board} Board Examination",
-        class_=class_, subject=subject,
-        date=datetime.now().strftime("%d-%m-%Y"),
-        sections=sections, section_titles=section_titles, labels=labels,
-        lang_attr="hi" if paper_language == "hindi" else "en",
+    _render_paper_pdf(
+        out_path=os.path.join(papers_dir, pdf_filename),
+        questions_sorted=questions_sorted, school=school, exam_name=exam_name,
+        board=board, class_=class_, subject=subject,
+        paper_language=paper_language, section_notes=None, qdist=qdist,
     )
-    pdf_path = os.path.join(papers_dir, pdf_filename)
-    HTML(string=rendered_html).write_pdf(pdf_path)
 
     urls = {
         "pdf_url": f"/static/papers/{pdf_filename}",
@@ -1210,6 +1230,14 @@ h4.section-title {
 
 ol.question-list { list-style-type: none; padding-left: 0; margin-top: 0; }
 
+/* "Attempt any 4 of 6" — the internal-choice instruction for a section. */
+p.section-note {
+  margin: -4px 0 8px;
+  font-size: 11pt;
+  font-style: italic;
+  color: #444;
+}
+
 li.question {
   margin-bottom: 12px;
   page-break-inside: avoid;
@@ -1240,6 +1268,41 @@ ol.options li {
   margin-bottom: 2px;
   padding-left: 4px;
 }
+
+/* Match the Following: a real two-column table, Column A numbered 1..n and
+   Column B lettered a..n, so the student has something to match. */
+table.match {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 0 18px;
+  font-size: 11.5pt;
+}
+table.match th {
+  text-align: left;
+  font-weight: 700;
+  border-bottom: 1px solid #bbb;
+  padding: 3px 8px;
+  width: 50%;
+}
+table.match td {
+  vertical-align: top;
+  padding: 3px 8px;
+}
+
+/* Case Study: an indented stimulus passage, then its sub-questions. */
+.case-passage {
+  margin: 8px 0 6px 18px;
+  padding: 8px 10px;
+  border-left: 3px solid #bbb;
+  background: #f7f7f7;
+  text-align: justify;
+}
+ol.sub-questions {
+  list-style-type: lower-roman;
+  padding-left: 46px;
+  margin: 4px 0 0;
+}
+ol.sub-questions li { margin-bottom: 3px; }
 </style>
 </head>
 <body>
@@ -1257,6 +1320,9 @@ ol.options li {
     {% if q_list %}
     <section>
       <h4 class="section-title">{{ section_titles[sec_type] }}</h4>
+      {% if section_notes.get(sec_type) %}
+      <p class="section-note">{{ section_notes[sec_type] }}</p>
+      {% endif %}
       <ol class="question-list">
         {% for q in q_list %}
         <li class="question">
@@ -1271,6 +1337,27 @@ ol.options li {
             {% endfor %}
           </ol>
           {% endif %}
+          {% if q.pairs %}
+          <table class="match">
+            <tr><th>{{ labels.column_a }}</th><th>{{ labels.column_b }}</th></tr>
+            {% for pair in q.pairs %}
+            <tr>
+              <td>({{ loop.index }}) {{ pair[0] | math_render | safe }}</td>
+              <td>({{ 'abcdefgh'[loop.index0] }}) {{ pair[1] | math_render | safe }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+          {% endif %}
+          {% if q.passage %}
+          <div class="case-passage">{{ q.passage | math_render | safe }}</div>
+          {% endif %}
+          {% if q.sub_questions %}
+          <ol class="sub-questions">
+            {% for sq in q.sub_questions %}
+            <li>{{ sq | math_render | safe }}</li>
+            {% endfor %}
+          </ol>
+          {% endif %}
         </li>
         {% set q_num.value = q_num.value + 1 %}
         {% endfor %}
@@ -1282,6 +1369,17 @@ ol.options li {
 </body>
 </html>
 """
+
+
+def _roman(n: int) -> str:
+    """Lowercase roman numeral for case-study sub-question labels (i, ii, iii...)."""
+    numerals = [(10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")]
+    out = ""
+    for value, sym in numerals:
+        while n >= value:
+            out += sym
+            n -= value
+    return out or "i"
 
 
 def _set_run_font(run, font_name: str = "Nirmala UI", size_pt: float = 11.0, bold: bool = False):
@@ -1346,12 +1444,12 @@ def download_word(paper_id):
         "Short Answer": "Short Answer", "Long Answer": "Long Answer",
         "Matching": "Matching", "Case Study": "Case Study",
     }
-    section_titles = _section_titles_for(paper_language)
-    grouped = {k: [] for k in section_titles.keys()}
+    grouped = {k: [] for k in _SECTION_ORDER}
     for q in paper.get("questions", []):
         sk = section_key.get(_normalize_qtype(q.get("question_type", "")))
         if sk:
             grouped[sk].append(q)
+    section_titles = _section_titles_for(paper_language, grouped)
 
     q_counter = 1
     for sec_key, q_list in grouped.items():
@@ -1359,6 +1457,12 @@ def download_word(paper_id):
             continue
         h = doc.add_paragraph()
         _set_run_font(h.add_run(section_titles[sec_key]), font_name, 13, bold=True)
+        note = (paper.get("section_notes") or {}).get(sec_key)
+        if note:
+            np_ = doc.add_paragraph()
+            nr = np_.add_run(note)
+            _set_run_font(nr, font_name, 10)
+            nr.italic = True
 
         for q in q_list:
             p = doc.add_paragraph()
@@ -1373,6 +1477,33 @@ def download_word(paper_id):
                     op = doc.add_paragraph()
                     _set_run_font(op.add_run(f"   ({chr(96+idx)}) "), font_name, 11, bold=True)
                     _set_run_font(op.add_run(str(opt)), font_name, 11)
+
+            # Match the Following: a real 2-column table the student can fill in.
+            pairs = q.get("pairs") or []
+            if pairs:
+                table = doc.add_table(rows=1, cols=2)
+                table.style = "Table Grid"
+                hdr = table.rows[0].cells
+                for cell, text in zip(hdr, (labels["column_a"], labels["column_b"])):
+                    cell.paragraphs[0].runs.clear() if cell.paragraphs[0].runs else None
+                    _set_run_font(cell.paragraphs[0].add_run(text), font_name, 11, bold=True)
+                for idx, pair in enumerate(pairs):
+                    row = table.add_row().cells
+                    _set_run_font(row[0].paragraphs[0].add_run(f"({idx+1}) {pair[0]}"), font_name, 11)
+                    _set_run_font(
+                        row[1].paragraphs[0].add_run(f"({chr(97+idx)}) {pair[1]}"), font_name, 11)
+                doc.add_paragraph()
+
+            # Case Study: the stimulus passage, then its sub-questions.
+            if q.get("passage"):
+                pp = doc.add_paragraph()
+                pp.paragraph_format.left_indent = Inches(0.35)
+                _set_run_font(pp.add_run(str(q["passage"])), font_name, 10.5)
+            for idx, sq in enumerate(q.get("sub_questions") or [], start=1):
+                sp = doc.add_paragraph()
+                sp.paragraph_format.left_indent = Inches(0.6)
+                _set_run_font(sp.add_run(f"({_roman(idx)}) "), font_name, 11, bold=True)
+                _set_run_font(sp.add_run(str(sq)), font_name, 11)
             q_counter += 1
 
     buf = io.BytesIO()
@@ -1435,6 +1566,28 @@ hr.sep { border: 0; border-top: 1px dashed #ccc; margin: 10px 0; }
           {% for opt in q.options %}<li>{{ opt | math_render | safe }}</li>{% endfor %}
         </ol>
       {% endif %}
+      {% if q.pairs %}
+        <table style="width:100%; border-collapse:collapse; margin:4px 0 4px 24px;">
+          <tr>
+            <th style="text-align:left; padding:2px 8px; border-bottom:1px solid #bbb;">{{ labels.column_a }}</th>
+            <th style="text-align:left; padding:2px 8px; border-bottom:1px solid #bbb;">{{ labels.column_b }}</th>
+          </tr>
+          {% for pair in q.pairs %}
+          <tr>
+            <td style="padding:2px 8px; vertical-align:top;">({{ loop.index }}) {{ pair[0] | math_render | safe }}</td>
+            <td style="padding:2px 8px; vertical-align:top;">({{ 'abcdefgh'[loop.index0] }}) {{ pair[1] | math_render | safe }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      {% endif %}
+      {% if q.passage %}
+        <div style="margin:4px 0 4px 24px; padding:6px 10px; border-left:3px solid #bbb; background:#f7f7f7;">{{ q.passage | math_render | safe }}</div>
+      {% endif %}
+      {% if q.sub_questions %}
+        <ol type="i" style="margin:4px 0 4px 44px;">
+          {% for sq in q.sub_questions %}<li>{{ sq | math_render | safe }}</li>{% endfor %}
+        </ol>
+      {% endif %}
       <div class="a"><span class="label">{{ labels.answer }}:</span> {{ q.answer | math_render | safe }}</div>
       {% if q.explanation %}
         <div class="e"><span class="label">{{ labels.explanation }}:</span> {{ q.explanation | math_render | safe }}</div>
@@ -1447,6 +1600,132 @@ hr.sep { border: 0; border-top: 1px dashed #ccc; margin: 10px 0; }
 """
 
 
+@main.route("/api/paper/<paper_id>", methods=["PATCH"])
+@limiter.limit("60 per hour")
+def update_paper(paper_id):
+    """Save manual edits to a generated paper and re-render its PDF.
+
+    Marks the paper as edited, which permanently withdraws its answer key: the
+    stored answers belong to the questions the AI wrote, and once a teacher
+    rewrites a question we can no longer claim to know the answer.
+    """
+    papers_dir = os.path.join(current_app.root_path, "static", "papers")
+    json_path = os.path.join(papers_dir, f"{paper_id}.json")
+    if not os.path.exists(json_path):
+        return jsonify({"error": "Paper not found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    edited = payload.get("questions")
+    if not isinstance(edited, list) or not edited:
+        return jsonify({"error": "No questions supplied"}), 400
+    if len(edited) > 100:
+        return jsonify({"error": "Too many questions"}), 400
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        paper = json.load(f)
+
+    original = paper.get("questions", [])
+    merged = []
+    for item in edited:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        base = dict(original[idx]) if isinstance(idx, int) and 0 <= idx < len(original) else {}
+
+        text = str(item.get("question_text", base.get("question_text", "")))[:4000].strip()
+        if not text:
+            continue                       # a question emptied out is a deletion
+        base["question_text"] = text
+        base["question"] = text
+        try:
+            base["marks"] = max(0, min(20, int(item.get("marks", base.get("marks", 1)))))
+        except (TypeError, ValueError):
+            base["marks"] = base.get("marks", 1)
+
+        if isinstance(item.get("options"), list):
+            opts = [str(o).strip()[:500] for o in item["options"] if str(o).strip()]
+            base["options"] = opts[:6] or None
+        if isinstance(item.get("pairs"), list):
+            pairs = []
+            for pr in item["pairs"]:
+                if isinstance(pr, (list, tuple)) and len(pr) >= 2:
+                    left, right = str(pr[0]).strip()[:300], str(pr[1]).strip()[:300]
+                    if left or right:
+                        pairs.append([left, right])
+            base["pairs"] = pairs[:6] or None
+        if isinstance(item.get("passage"), str):
+            base["passage"] = item["passage"].strip()[:4000] or None
+        if isinstance(item.get("sub_questions"), list):
+            subs = [str(x).strip()[:500] for x in item["sub_questions"] if str(x).strip()]
+            base["sub_questions"] = subs[:6] or None
+
+        base["source"] = "Edited"
+        merged.append(base)
+
+    if not merged:
+        return jsonify({"error": "Every question was empty"}), 400
+
+    paper["questions"] = merged
+    paper["edited"] = True
+    paper["summary"] = {
+        "total_questions": len(merged),
+        "total_marks": sum(int(q.get("marks", 0) or 0) for q in merged),
+    }
+
+    paper_language = "english"
+    for q in merged:
+        if (q.get("language") or "").lower() == "hindi":
+            paper_language = "hindi"
+            break
+
+    # New filename each save so browsers and CDNs cannot serve a stale PDF.
+    pdf_filename = f"paper_{paper_id}_{datetime.now().strftime('%H%M%S')}.pdf"
+    try:
+        _render_paper_pdf(
+            out_path=os.path.join(papers_dir, pdf_filename),
+            questions_sorted=merged,
+            school=paper.get("schoolName", ""), exam_name=paper.get("examName", ""),
+            board=paper.get("schoolBoard", ""), class_=paper.get("class", ""),
+            subject=paper.get("subject", ""), paper_language=paper_language,
+            section_notes=paper.get("section_notes") or {},
+        )
+    except Exception as e:
+        current_app.logger.error("Re-render after edit failed for %s: %s", paper_id, e)
+        return jsonify({"error": "Could not re-render the paper."}), 500
+
+    paper["pdf_url"] = f"/static/papers/{pdf_filename}"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(paper, f, indent=2, ensure_ascii=False)
+
+    row = Paper.query.filter_by(paper_id=paper_id).first()
+    if row:
+        row.pdf_path = paper["pdf_url"]
+        row.total_questions = paper["summary"]["total_questions"]
+        row.total_marks = paper["summary"]["total_marks"]
+        PaperQuestion.query.filter_by(paper_id=paper_id).delete()
+        for q in merged:
+            pq = PaperQuestion()
+            pq.paper_id = paper_id
+            pq.question_id = q.get("id")
+            pq.question_text = q.get("question_text")
+            pq.type = q.get("question_type")
+            pq.difficulty = q.get("difficulty")
+            pq.marks = q.get("marks")
+            pq.options = q.get("options") or None
+            pq.answer = q.get("answer", "Not provided")
+            db.session.add(pq)
+        db.session.commit()
+
+    return jsonify({
+        "paper_id": paper_id,
+        "edited": True,
+        "summary": paper["summary"],
+        "pdf_url": paper["pdf_url"],
+        "word_url": f"/api/download/word/{paper_id}",
+        "answer_key_available": False,
+    })
+
+
 @main.route("/api/download/answer_key/<paper_id>", methods=["GET"])
 def download_answer_key(paper_id):
     json_path = os.path.join(current_app.root_path, "static", "papers", f"{paper_id}.json")
@@ -1455,6 +1734,14 @@ def download_answer_key(paper_id):
 
     with open(json_path, "r", encoding="utf-8") as f:
         paper = json.load(f)
+
+    # The button is hidden client-side after an edit; this is the matching
+    # server-side guard so the URL cannot simply be requested directly.
+    if paper.get("edited"):
+        return jsonify({
+            "error": "This paper was edited manually, so its answer key is no "
+                     "longer available.",
+        }), 409
 
     # Detect paper language from any question entry (defaults to English).
     paper_language = "english"

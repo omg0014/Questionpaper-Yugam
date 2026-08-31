@@ -20,3 +20,6 @@ instance/
 # OS / editor
 Thumbs.db
 *.swp
+
+# Local provider notes / vendor API docs (not part of the project)
+yugam-ai.md

@@ -50,6 +50,18 @@ _OUTPUT_FORMAT_BLOCK = """OUTPUT FORMAT REQUIREMENTS:
   - "difficulty" ("Easy", "Medium", or "Hard")
   - "answer" (correct answer; for MCQ provide the letter like "A" or "B")
   - "explanation" (brief explanation as a string)
+  - "pairs" (REQUIRED for "Matching" type only — see below)
+  - "passage" and "sub_questions" (REQUIRED for "Case Study" type only — see below)
+
+For "Matching" questions you MUST include a "pairs" array of EXACTLY 4 entries.
+Each entry is [term, definition]. The "question" field is only the instruction
+line; the actual items to match go in "pairs". Never emit a Matching question
+without "pairs".
+
+For "Case Study" questions you MUST include "passage" (a self-contained stimulus
+paragraph of 40-100 words that the student reads) and "sub_questions" (2 to 4
+questions about that passage). The "question" field is only the instruction line.
+Never emit a Case Study question without "passage" and "sub_questions".
 
 Example MCQ:
 {
@@ -60,6 +72,38 @@ Example MCQ:
   "difficulty": "Easy",
   "answer": "C",
   "explanation": "Paris is the capital of France."
+}
+
+Example Matching:
+{
+  "type": "Matching",
+  "question": "Match the terms in Column A with their meanings in Column B.",
+  "pairs": [
+    ["Rational number", "A number expressible as p/q with q not equal to 0"],
+    ["Irrational number", "A number that cannot be written as a fraction"],
+    ["Composite number", "A number with more than two factors"],
+    ["Prime number", "A number with exactly two factors"]
+  ],
+  "marks": 4,
+  "difficulty": "Medium",
+  "answer": "1-A, 2-B, 3-C, 4-D",
+  "explanation": "Each term is matched with its standard definition."
+}
+
+Example Case Study:
+{
+  "type": "Case Study",
+  "question": "Read the passage below and answer the questions that follow.",
+  "passage": "A shopkeeper stacks 84 red pens and 90 blue pens into identical bundles, with no pen left over and no bundle mixing colours.",
+  "sub_questions": [
+    "What is the largest possible number of pens in each bundle?",
+    "How many bundles of each colour are formed?",
+    "Which concept from Real Numbers did you use?"
+  ],
+  "marks": 4,
+  "difficulty": "Medium",
+  "answer": "HCF(84, 90) = 6; 14 red bundles and 15 blue bundles.",
+  "explanation": "The largest equal bundle size is the HCF of the two counts."
 }"""
 
 

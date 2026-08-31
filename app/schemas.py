@@ -26,6 +26,18 @@ class QuestionTypeDist(BaseModel):
     model_config = ConfigDict(extra="ignore")
     count: int = Field(ge=0, le=50)
     marks: int = Field(ge=0, le=20)
+    # Internal choice: print `count` questions but require only `attemptAny` of
+    # them ("attempt any 4 of 6"). None/0 means every question is compulsory.
+    attemptAny: Optional[int] = Field(default=None, ge=1, le=50)
+
+    @field_validator("attemptAny")
+    @classmethod
+    def _check_attempt(cls, v, info):
+        # A choice that equals or exceeds the printed count is not a choice.
+        count = (info.data or {}).get("count")
+        if not v or count is None or v >= count:
+            return None
+        return v
 
 
 class GenerateRequest(BaseModel):
@@ -88,11 +100,80 @@ class AIQuestion(BaseModel):
     answer: str = Field(default="Not provided", max_length=2000)
     explanation: str = Field(default="", max_length=4000)
 
+    # "Matching" questions carry their Column A / Column B items here rather than
+    # in `options`, so a match question can be rendered as a real two-column table.
+    pairs: Optional[list[list[str]]] = None
+    # "Case Study" questions carry the stimulus passage and its sub-questions.
+    passage: Optional[str] = Field(default=None, max_length=4000)
+    sub_questions: Optional[list[str]] = None
+
     @field_validator("difficulty")
     @classmethod
     def _check_diff(cls, v: str) -> str:
         v = (v or "Medium").strip().title()
         return v if v in _ALLOWED_DIFFICULTIES else "Medium"
+
+    @field_validator("answer", "explanation", mode="before")
+    @classmethod
+    def _flatten_text(cls, v):
+        """Accept a list or dict where a string is expected.
+
+        A Case Study with three sub-questions comes back with three answers, so
+        models legitimately send `answer` as a list. Rejecting that dropped the
+        whole question and replaced a good case study with placeholder text.
+        """
+        if v is None:
+            return v
+        if isinstance(v, dict):
+            v = [f"{k}: {val}" for k, val in v.items()]
+        if isinstance(v, (list, tuple)):
+            parts = []
+            for n, item in enumerate(v, 1):
+                if isinstance(item, dict):
+                    item = "; ".join(f"{k}: {val}" for k, val in item.items())
+                text = str(item).strip()
+                if text:
+                    parts.append(text if len(v) == 1 else f"({n}) {text}")
+            v = "\n".join(parts)
+        return str(v)[:3900]
+
+    @field_validator("pairs", mode="before")
+    @classmethod
+    def _coerce_pairs(cls, v):
+        """Accept [[l, r], ...] or [{"left": l, "right": r}, ...] and normalise to lists.
+
+        LLMs alternate freely between these shapes (and between term/definition,
+        item/match naming), so accept them all rather than dropping the question.
+        """
+        if not v:
+            return None
+        out = []
+        for item in v:
+            left = right = None
+            if isinstance(item, dict):
+                keys = {k.lower(): val for k, val in item.items()}
+                for lk in ("left", "term", "item", "column_a", "a", "question"):
+                    if lk in keys:
+                        left = keys[lk]
+                        break
+                for rk in ("right", "definition", "match", "column_b", "b", "answer"):
+                    if rk in keys:
+                        right = keys[rk]
+                        break
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                left, right = item[0], item[1]
+            if left is None or right is None:
+                continue
+            out.append([str(left).strip()[:300], str(right).strip()[:300]])
+        return out[:6] or None
+
+    @field_validator("sub_questions", mode="before")
+    @classmethod
+    def _trim_sub_questions(cls, v):
+        if not v:
+            return None
+        cleaned = [str(s).strip()[:500] for s in v if str(s).strip()]
+        return cleaned[:6] or None
 
     @field_validator("options")
     @classmethod

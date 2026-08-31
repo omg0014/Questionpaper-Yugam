@@ -36,4 +36,6 @@ EXPOSE 8080
 
 # Run the app using Gunicorn
 # Use 1 worker + 4 threads and longer timeout for long-running AI requests
-CMD ["gunicorn", "run:app", "-w", "1", "-k", "gthread", "--threads", "4", "-b", "0.0.0.0:8080", "--timeout", "600", "--preload"]
+# Shell form so ${PORT} is expanded at runtime; platforms inject it and a
+# hardcoded port makes the health check fail.
+CMD gunicorn run:app -w 1 -k gthread --threads 4 -b 0.0.0.0:${PORT:-8080} --timeout 600 --preload
